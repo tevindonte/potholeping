@@ -7,11 +7,19 @@ export default defineConfig({
     viteStaticCopy({
       targets: [
         {
+          src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs',
+          dest: 'ort',
+        },
+        {
           src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm',
           dest: 'ort',
         },
         {
-          src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs',
+          src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.mjs',
+          dest: 'ort',
+        },
+        {
+          src: 'node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.jsep.wasm',
           dest: 'ort',
         },
       ],
