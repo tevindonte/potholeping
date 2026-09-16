@@ -1,5 +1,5 @@
 /**
- * Appwrite client: anonymous session, image upload, row create/list.
+ * Appwrite client: anonymous session, image upload, row create/list/update.
  */
 
 import { Client, Account, Storage, TablesDB, ID, Query } from 'appwrite';
@@ -75,6 +75,17 @@ export async function logDetection({
   });
 
   return { row, imageId: fileUpload.$id };
+}
+
+/** Patch severity on an existing row (requires Update permission on the table). */
+export async function updateSeverity(rowId, severity) {
+  await ensureSession();
+  return tablesDB.updateRow({
+    databaseId: DATABASE_ID,
+    tableId: TABLE_ID,
+    rowId,
+    data: { severity: Number(severity) },
+  });
 }
 
 /** Fetch recent detections for the map view. */

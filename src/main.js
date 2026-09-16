@@ -6,6 +6,7 @@ import './style.css';
 import { loadModel, detect } from './inference.js';
 import { computeSeverity, severityColor } from './severity.js';
 import { ensureSession, createSessionId, logDetection } from './appwrite.js';
+import { unlockFeedback, pingLogged } from './feedback.js';
 
 const INFER_INTERVAL_MS = 250;
 const CONFIRM_N = 3;
@@ -19,17 +20,22 @@ const statusEl = document.getElementById('status');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const logCountEl = document.getElementById('logCount');
+const summaryEl = document.getElementById('sessionSummary');
+const summaryBody = document.getElementById('summaryBody');
+const summaryMapBtn = document.getElementById('summaryMapBtn');
+const summaryCloseBtn = document.getElementById('summaryCloseBtn');
 
 let stream = null;
 let running = false;
 let inferTimer = null;
 let driveSessionId = null;
+let sessionStartedAt = 0;
 let streak = 0;
 let lastLoggedAt = 0;
 let loggedCount = 0;
+let sessionSeverities = [];
 let logging = false;
 let inferBusy = false;
-let lastDetections = [];
 let lastCoords = null;
 
 function setStatus(msg, kind = '') {
@@ -47,12 +53,12 @@ function syncCanvasSize() {
   }
 }
 
-function drawDetections(detections, provisionalSeverity) {
+function drawDetections(detections) {
   syncCanvasSize();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
 
   for (const det of detections) {
-    const severity = provisionalSeverity ?? computeSeverity(
+    const severity = computeSeverity(
       det,
       overlay.width,
       overlay.height,
@@ -97,7 +103,6 @@ function requestGeo() {
     { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
   );
 
-  // Keep coords fresh while driving
   navigator.geolocation.watchPosition(
     (pos) => {
       lastCoords = {
@@ -147,6 +152,47 @@ function captureFrameBlob() {
   });
 }
 
+function formatDuration(ms) {
+  const sec = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s}s`;
+}
+
+function showSessionSummary() {
+  const count = sessionSeverities.length;
+  const worst = count ? Math.max(...sessionSeverities) : 0;
+  const avg = count
+    ? (sessionSeverities.reduce((a, b) => a + b, 0) / count).toFixed(1)
+    : '—';
+  const duration = formatDuration(Date.now() - sessionStartedAt);
+
+  if (count === 0) {
+    summaryBody.innerHTML = `
+      <p class="summary-lead">No potholes logged this drive.</p>
+      <p class="summary-sub">Session lasted ${duration}. Keep the phone mounted and try again on a rougher stretch.</p>
+    `;
+  } else {
+    summaryBody.innerHTML = `
+      <p class="summary-lead"><strong>${count}</strong> pothole${count === 1 ? '' : 's'} logged</p>
+      <p class="summary-sub">in ${duration}</p>
+      <ul class="summary-stats">
+        <li><span>Worst severity</span><strong>${worst}/5</strong></li>
+        <li><span>Average</span><strong>${avg}/5</strong></li>
+      </ul>
+    `;
+  }
+
+  summaryEl.hidden = false;
+  summaryEl.setAttribute('aria-hidden', 'false');
+}
+
+function hideSessionSummary() {
+  summaryEl.hidden = true;
+  summaryEl.setAttribute('aria-hidden', 'true');
+}
+
 async function confirmAndLog(bestDet) {
   if (logging) return;
   const now = Date.now();
@@ -180,7 +226,9 @@ async function confirmAndLog(bestDet) {
     lastLoggedAt = Date.now();
     streak = 0;
     loggedCount += 1;
+    sessionSeverities.push(severity);
     logCountEl.textContent = String(loggedCount);
+    pingLogged();
     setStatus(`Logged · severity ${severity} · cooldown ${COOLDOWN_MS / 1000}s`, 'ok');
   } catch (err) {
     console.error(err);
@@ -196,7 +244,6 @@ async function inferenceTick() {
 
   try {
     const detections = await detect(video);
-    lastDetections = detections;
     drawDetections(detections);
 
     const inCooldown = Date.now() - lastLoggedAt < COOLDOWN_MS;
@@ -228,13 +275,19 @@ async function inferenceTick() {
 
 async function startDetecting() {
   startBtn.disabled = true;
+  hideSessionSummary();
   setStatus('Starting camera…');
+  await unlockFeedback();
 
   try {
     await startCamera();
     driveSessionId = createSessionId();
+    sessionStartedAt = Date.now();
+    sessionSeverities = [];
     streak = 0;
     lastLoggedAt = 0;
+    loggedCount = 0;
+    logCountEl.textContent = '0';
     running = true;
     stopBtn.disabled = false;
     setStatus('Scanning for potholes…');
@@ -246,7 +299,8 @@ async function startDetecting() {
   }
 }
 
-function stopDetecting() {
+function stopDetecting({ showSummary = true } = {}) {
+  const wasRunning = running;
   running = false;
   if (inferTimer) {
     clearInterval(inferTimer);
@@ -256,7 +310,11 @@ function stopDetecting() {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   startBtn.disabled = false;
   stopBtn.disabled = true;
-  setStatus('Stopped');
+  setStatus(wasRunning ? 'Stopped' : statusEl.textContent);
+
+  if (showSummary && wasRunning && sessionStartedAt) {
+    showSessionSummary();
+  }
 }
 
 async function boot() {
@@ -284,7 +342,11 @@ async function boot() {
 }
 
 startBtn.addEventListener('click', startDetecting);
-stopBtn.addEventListener('click', stopDetecting);
-window.addEventListener('beforeunload', stopDetecting);
+stopBtn.addEventListener('click', () => stopDetecting({ showSummary: true }));
+summaryCloseBtn.addEventListener('click', hideSessionSummary);
+summaryMapBtn.addEventListener('click', () => {
+  window.location.href = '/map.html';
+});
+window.addEventListener('beforeunload', () => stopDetecting({ showSummary: false }));
 
 boot();

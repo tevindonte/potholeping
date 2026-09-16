@@ -35,6 +35,24 @@
       </div>
     </div>
 
+    <div
+      id="sessionSummary"
+      class="summary-overlay"
+      hidden
+      aria-hidden="true"
+      role="dialog"
+      aria-labelledby="summaryTitle"
+    >
+      <div class="summary-card">
+        <h2 id="summaryTitle">Drive summary</h2>
+        <div id="summaryBody"></div>
+        <div class="summary-actions">
+          <button id="summaryMapBtn" type="button">View map</button>
+          <button id="summaryCloseBtn" class="secondary" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

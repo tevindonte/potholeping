@@ -11,6 +11,7 @@
   "dependencies": {
     "appwrite": "^27.0.0",
     "leaflet": "^1.9.4",
+    "leaflet.markercluster": "^1.5.3",
     "onnxruntime-web": "^1.30.0"
   },
   "devDependencies": {

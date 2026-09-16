@@ -19,6 +19,22 @@
         </nav>
       </header>
 
+      <div class="map-toolbar">
+        <label class="map-filter">
+          Range
+          <select id="dateRange">
+            <option value="all" selected>All time</option>
+            <option value="today">Today</option>
+            <option value="week">Past 7 days</option>
+            <option value="month">Past 30 days</option>
+          </select>
+        </label>
+        <div class="map-exports">
+          <button id="exportCsv" class="secondary compact" type="button">CSV</button>
+          <button id="exportGeojson" class="secondary compact" type="button">GeoJSON</button>
+        </div>
+      </div>
+
       <div id="map" role="application" aria-label="Pothole map"></div>
 
       <div class="meta">
