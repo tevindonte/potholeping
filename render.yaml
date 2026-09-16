@@ -1,0 +1,18 @@
+# Render static site
+services:
+  - type: web
+    name: potholeping
+    runtime: static
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_APPWRITE_ENDPOINT
+        value: https://nyc.cloud.appwrite.io/v1
+      - key: VITE_APPWRITE_PROJECT_ID
+        value: 6aab17c1001c03cbb50a
+      - key: VITE_APPWRITE_DATABASE_ID
+        value: 6aab17e6000e7c186b08
+      - key: VITE_APPWRITE_TABLE_ID
+        value: 6aab17f70029d7dc9d70
+      - key: VITE_APPWRITE_BUCKET_ID
+        value: 6aab195e0012fc57c6a8

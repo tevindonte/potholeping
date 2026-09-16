@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <meta name="theme-color" content="#0c1410" />
+    <title>PotholePing — Map</title>
+  </head>
+  <body>
+    <div class="app-shell map-shell">
+      <header class="topbar">
+        <h1 class="brand">Pothole<span>Ping</span></h1>
+        <nav class="nav">
+          <a href="/index.html">Detect</a>
+          <a href="/map.html" class="active">Map</a>
+        </nav>
+      </header>
+
+      <div id="map" role="application" aria-label="Pothole map"></div>
+
+      <div class="meta">
+        <p id="mapStatus">Loading…</p>
+        <p class="stat">Pins: <strong id="mapCount">0</strong></p>
+      </div>
+    </div>
+
+    <script type="module" src="/src/map.js"></script>
+  </body>
+</html>

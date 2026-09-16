@@ -1,0 +1,20 @@
+{
+  "name": "potholeping",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "appwrite": "^27.0.0",
+    "leaflet": "^1.9.4",
+    "onnxruntime-web": "^1.30.0"
+  },
+  "devDependencies": {
+    "vite": "^6.3.5",
+    "vite-plugin-static-copy": "^3.1.0"
+  }
+}
