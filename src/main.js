@@ -265,13 +265,21 @@ async function boot() {
   setStatus('Loading model…');
 
   try {
-    await Promise.all([loadModel(), ensureSession()]);
+    await loadModel();
+  } catch (err) {
+    console.error(err);
+    setStatus(`Model init failed: ${err.message || err}`, 'err');
+    return;
+  }
+
+  try {
+    await ensureSession();
     setStatus('Model ready — allow location, then Start Detecting');
     startBtn.disabled = false;
     requestGeo();
   } catch (err) {
     console.error(err);
-    setStatus(`Init failed: ${err.message || err}`, 'err');
+    setStatus(`Appwrite init failed: ${err.message || err}`, 'err');
   }
 }
 
