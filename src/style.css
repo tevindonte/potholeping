@@ -121,7 +121,9 @@ a:hover {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  /* contain keeps overlay boxes aligned with letterboxed model coords */
+  object-fit: contain;
+  background: #050805;
 }
 
 .stage canvas {

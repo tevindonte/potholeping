@@ -3,7 +3,7 @@
  */
 
 import './style.css';
-import { loadModel, inferFrame, CONF_THRESHOLD } from './inference.js';
+import { loadModel, inferFrame, CONF_THRESHOLD, getInputSize } from './inference.js';
 import { computeSeverity, severityColor } from './severity.js';
 import {
   ensureSession,
@@ -27,8 +27,10 @@ import {
 } from './motion.js';
 import { startProximityAlerts, stopProximityAlerts } from './alerts.js';
 import { acquireWakeLock, releaseWakeLock } from './wake.js';
+import { updateSoftTracks, resetSoftTracks } from './softTrack.js';
 
 const INFER_INTERVAL_MS = 250;
+const INFER_INTERVAL_FAST_MS = 150;
 const CONFIRM_N = 3;
 const COOLDOWN_MS = 9000;
 const JPEG_QUALITY = 0.72;
@@ -48,6 +50,7 @@ function isDebugMode() {
 
 let debugMode = isDebugMode();
 let debugTick = 0;
+let inferIntervalMs = INFER_INTERVAL_MS;
 
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
@@ -461,12 +464,20 @@ async function confirmAndLog(bestDet) {
   }
 }
 
+function ensureInferTimer(intervalMs) {
+  if (!running) return;
+  if (inferTimer && intervalMs === inferIntervalMs) return;
+  inferIntervalMs = intervalMs;
+  if (inferTimer) clearInterval(inferTimer);
+  inferTimer = setInterval(inferenceTick, inferIntervalMs);
+}
+
 async function inferenceTick() {
   if (!running || video.readyState < 2 || inferBusy) return;
   inferBusy = true;
 
   try {
-    const { detections, rawDebug } = await inferFrame(video, {
+    const { detections, softCandidates, rawDebug } = await inferFrame(video, {
       includeRawDebug: debugMode,
       debugThresh: DEBUG_CONF,
     });
@@ -477,19 +488,41 @@ async function inferenceTick() {
     }
 
     const inCooldown = Date.now() - lastLoggedAt < COOLDOWN_MS;
+    const soft = updateSoftTracks(softCandidates || []);
 
-    if (detections.length > 0 && !inCooldown) {
-      streak += 1;
-      setStatus(`Detecting… streak ${streak}/${CONFIRM_N}`);
-      if (streak >= CONFIRM_N) {
-        const best = detections.reduce((a, b) =>
+    // Speed up only while a mid-conf approach is in flight
+    ensureInferTimer(soft.hasMidConf ? INFER_INTERVAL_FAST_MS : INFER_INTERVAL_MS);
+
+    if (!inCooldown && !logging) {
+      if (detections.length > 0) {
+        streak += 1;
+        setStatus(`Detecting… streak ${streak}/${CONFIRM_N}`);
+        if (streak >= CONFIRM_N) {
+          const best = detections.reduce((a, b) =>
+            a.confidence >= b.confidence ? a : b
+          );
+          await confirmAndLog(best);
+        }
+      } else if (soft.ready) {
+        streak = 0;
+        setStatus(
+          `Soft-confirm distant · ${(soft.ready.confidence * 100).toFixed(0)}% · streak ${soft.ready.streak}`,
+          'ok'
+        );
+        await confirmAndLog(soft.ready);
+        resetSoftTracks();
+      } else if (soft.hasMidConf) {
+        streak = 0;
+        const bestSoft = soft.tracks.reduce((a, b) =>
           a.confidence >= b.confidence ? a : b
         );
-        await confirmAndLog(best);
+        setStatus(
+          `Tracking distant… ${(bestSoft.confidence * 100).toFixed(0)}% · soft ${bestSoft.streak}/4`
+        );
+      } else {
+        streak = 0;
+        if (running) setStatus('Scanning for potholes…');
       }
-    } else if (detections.length === 0) {
-      streak = 0;
-      if (!inCooldown && running) setStatus('Scanning for potholes…');
     } else if (inCooldown) {
       streak = 0;
       const left = Math.ceil((COOLDOWN_MS - (Date.now() - lastLoggedAt)) / 1000);
@@ -523,21 +556,23 @@ async function startDetecting() {
     lastLoggedAt = 0;
     loggedCount = 0;
     logCountEl.textContent = '0';
+    resetSoftTracks();
     running = true;
     stopBtn.disabled = false;
     startProximityAlerts(() => lastCoords);
+    const imgsz = getInputSize();
     setStatus(
-      motionOk
-        ? 'Scanning for potholes… (motion on)'
-        : 'Scanning for potholes… (visual only)'
+      `Scanning · imgsz ${imgsz}${motionOk ? ' · motion on' : ''} — tip: angle mount up to cut hood from frame`
     );
-    inferTimer = setInterval(inferenceTick, INFER_INTERVAL_MS);
+    inferIntervalMs = 0; // force timer recreate
+    ensureInferTimer(INFER_INTERVAL_MS);
   } catch (err) {
     console.error(err);
     setStatus(`Camera error: ${err.message || err}`, 'err');
     startBtn.disabled = false;
     stopMotionTracking();
     stopProximityAlerts();
+    releaseWakeLock();
   }
 }
 
@@ -552,6 +587,7 @@ function stopDetecting({ showSummary = true } = {}) {
   stopMotionTracking();
   stopProximityAlerts();
   releaseWakeLock();
+  resetSoftTracks();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   startBtn.disabled = false;
   stopBtn.disabled = true;
@@ -594,7 +630,10 @@ async function boot() {
 
   try {
     await ensureSession();
-    setStatus('Model ready — allow location, then Start Detecting');
+    const imgsz = getInputSize();
+    setStatus(
+      `Ready · imgsz ${imgsz} — tip: raise/angle mount to minimize hood. Use ?imgsz=960 to trial higher res.`
+    );
     startBtn.disabled = false;
     requestGeo();
     scheduleFlush();
