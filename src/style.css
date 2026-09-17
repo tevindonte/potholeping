@@ -502,4 +502,41 @@ button.compact {
   display: none;
 }
 
+.debug-hud {
+  position: fixed;
+  left: 0.75rem;
+  bottom: 0.75rem;
+  z-index: 1800;
+  max-width: min(92vw, 360px);
+  max-height: 40vh;
+  overflow: auto;
+  padding: 0.65rem 0.75rem;
+  border-radius: 10px;
+  background: rgba(6, 12, 9, 0.88);
+  border: 1px solid rgba(100, 200, 255, 0.35);
+  color: #c8e7ff;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  pointer-events: none;
+}
+
+.debug-hud strong {
+  color: #7ec8ff;
+  font-size: 0.78rem;
+}
+
+.debug-hud pre {
+  margin: 0.4rem 0 0;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.68rem;
+  color: #d7ecff;
+}
+
+#debugToggle[data-on='1'] {
+  border-color: rgba(100, 200, 255, 0.7);
+  color: #7ec8ff;
+}
+
+
 

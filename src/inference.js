@@ -95,8 +95,9 @@ function nms(boxes, iouThresh = IOU_THRESHOLD) {
 
 /**
  * Parse raw YOLOv8 output (1, 5, 8400) into boxes in original image coords.
+ * applyNms=false returns every candidate above confThresh (diagnostic).
  */
-export function postprocess(output, meta, confThresh = CONF_THRESHOLD) {
+export function postprocess(output, meta, confThresh = CONF_THRESHOLD, applyNms = true) {
   const data = output.data;
   // dims: [1, 5, 8400]
   const numPreds = output.dims[2]; // 8400
@@ -125,10 +126,41 @@ export function postprocess(output, meta, confThresh = CONF_THRESHOLD) {
 
     if (x2 <= x1 || y2 <= y1) continue;
 
-    candidates.push({ x1, y1, x2, y2, confidence: conf });
+    const bw = x2 - x1;
+    const bh = y2 - y1;
+    candidates.push({
+      x1,
+      y1,
+      x2,
+      y2,
+      confidence: conf,
+      width: bw,
+      height: bh,
+    });
   }
 
-  return nms(candidates);
+  return applyNms ? nms(candidates) : candidates;
+}
+
+/**
+ * One model forward. Production detections always use CONF_THRESHOLD + NMS.
+ * When includeRawDebug is true, also returns pre-NMS candidates at debugThresh
+ * (read-only; does not affect detections).
+ */
+export async function inferFrame(source, { includeRawDebug = false, debugThresh = 0.15 } = {}) {
+  if (!session) throw new Error('Model not loaded');
+
+  const { tensor, ...meta } = preprocess(source);
+  const inputName = session.inputNames[0];
+  const results = await session.run({ [inputName]: tensor });
+  const output = results[session.outputNames[0]];
+
+  const detections = postprocess(output, meta, CONF_THRESHOLD, true);
+  const rawDebug = includeRawDebug
+    ? postprocess(output, meta, debugThresh, false)
+    : null;
+
+  return { detections, rawDebug };
 }
 
 /**
@@ -136,13 +168,9 @@ export function postprocess(output, meta, confThresh = CONF_THRESHOLD) {
  * Returns array of { x1, y1, x2, y2, confidence }.
  */
 export async function detect(source) {
-  if (!session) throw new Error('Model not loaded');
-
-  const { tensor, ...meta } = preprocess(source);
-  const inputName = session.inputNames[0];
-  const results = await session.run({ [inputName]: tensor });
-  const output = results[session.outputNames[0]];
-  return postprocess(output, meta);
+  const { detections } = await inferFrame(source);
+  return detections;
 }
 
+export const DEBUG_CONF_THRESHOLD = 0.15;
 export { CONF_THRESHOLD, INPUT_SIZE };

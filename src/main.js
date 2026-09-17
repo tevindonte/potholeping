@@ -3,7 +3,7 @@
  */
 
 import './style.css';
-import { loadModel, detect } from './inference.js';
+import { loadModel, inferFrame, CONF_THRESHOLD } from './inference.js';
 import { computeSeverity, severityColor } from './severity.js';
 import {
   ensureSession,
@@ -32,6 +32,22 @@ const INFER_INTERVAL_MS = 250;
 const CONFIRM_N = 3;
 const COOLDOWN_MS = 9000;
 const JPEG_QUALITY = 0.72;
+const DEBUG_CONF = 0.15;
+
+/** Temporary diagnostic: ?debug=1 or localStorage potholeping_debug=1 */
+function isDebugMode() {
+  try {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('debug') === '1' || q.get('debug') === 'true') return true;
+    if (localStorage.getItem('potholeping_debug') === '1') return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+let debugMode = isDebugMode();
+let debugTick = 0;
 
 const video = document.getElementById('video');
 const overlay = document.getElementById('overlay');
@@ -118,9 +134,28 @@ function syncCanvasSize() {
   }
 }
 
-function drawDetections(detections) {
+function drawDetections(detections, rawDebug = null) {
   syncCanvasSize();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+  // Debug-only: raw pre-NMS candidates at low threshold (dashed, does not log)
+  if (debugMode && rawDebug?.length) {
+    ctx.save();
+    ctx.setLineDash([6, 4]);
+    ctx.lineWidth = Math.max(1.5, overlay.width / 320);
+    ctx.font = `${Math.max(10, overlay.width / 48)}px "DM Sans", sans-serif`;
+    for (const det of rawDebug) {
+      const w = det.x2 - det.x1;
+      const h = det.y2 - det.y1;
+      const belowProd = det.confidence < CONF_THRESHOLD;
+      ctx.strokeStyle = belowProd ? 'rgba(100, 200, 255, 0.85)' : 'rgba(255, 180, 60, 0.9)';
+      ctx.strokeRect(det.x1, det.y1, w, h);
+      const label = `${(det.confidence * 100).toFixed(0)}% ${Math.round(w)}×${Math.round(h)}`;
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fillText(label, det.x1 + 2, Math.max(12, det.y1 - 4));
+    }
+    ctx.restore();
+  }
 
   for (const det of detections) {
     const severity = computeSeverity(
@@ -135,6 +170,7 @@ function drawDetections(detections) {
 
     ctx.strokeStyle = color;
     ctx.lineWidth = Math.max(2, overlay.width / 240);
+    ctx.setLineDash([]);
     ctx.strokeRect(det.x1, det.y1, w, h);
 
     const label = `${(det.confidence * 100).toFixed(0)}% · S${severity}`;
@@ -147,6 +183,52 @@ function drawDetections(detections) {
     ctx.fillStyle = '#0b1220';
     ctx.fillText(label, det.x1 + pad, Math.max(th - 2, det.y1 - pad - 2));
   }
+}
+
+function updateDebugHud(rawDebug, detections) {
+  const hud = document.getElementById('debugHud');
+  if (!hud) return;
+  if (!debugMode) {
+    hud.hidden = true;
+    return;
+  }
+  hud.hidden = false;
+  const raw = rawDebug || [];
+  const below = raw.filter((d) => d.confidence < CONF_THRESHOLD);
+  const lines = raw
+    .slice()
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 12)
+    .map((d) => {
+      const mark = d.confidence >= CONF_THRESHOLD ? '✓' : '·';
+      return `${mark} ${(d.confidence * 100).toFixed(1)}%  ${Math.round(d.width)}×${Math.round(d.height)}px  [${Math.round(d.x1)},${Math.round(d.y1)}]`;
+    });
+  hud.innerHTML = `<strong>DEBUG raw ≥${(DEBUG_CONF * 100).toFixed(0)}% (pre-NMS)</strong>
+    <div>prod keeps ≥${(CONF_THRESHOLD * 100).toFixed(0)}% + NMS · logging unchanged</div>
+    <div>raw ${raw.length} · below-prod ${below.length} · prod ${detections.length}</div>
+    <pre>${lines.join('\n') || '(no candidates)'}</pre>`;
+}
+
+function logDebugCandidates(rawDebug) {
+  if (!rawDebug?.length) return;
+  debugTick += 1;
+  // Throttle console spam; still every tick when something appears below prod threshold
+  const interesting = rawDebug.filter((d) => d.confidence < CONF_THRESHOLD);
+  if (interesting.length === 0 && debugTick % 8 !== 0) return;
+  const payload = rawDebug
+    .slice()
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, 20)
+    .map((d) => ({
+      conf: Number(d.confidence.toFixed(3)),
+      w: Math.round(d.width),
+      h: Math.round(d.height),
+      x1: Math.round(d.x1),
+      y1: Math.round(d.y1),
+      x2: Math.round(d.x2),
+      y2: Math.round(d.y2),
+    }));
+  console.log(`[debug raw conf≥${DEBUG_CONF}]`, payload);
 }
 
 function requestGeo() {
@@ -384,8 +466,15 @@ async function inferenceTick() {
   inferBusy = true;
 
   try {
-    const detections = await detect(video);
-    drawDetections(detections);
+    const { detections, rawDebug } = await inferFrame(video, {
+      includeRawDebug: debugMode,
+      debugThresh: DEBUG_CONF,
+    });
+    drawDetections(detections, rawDebug);
+    if (debugMode) {
+      updateDebugHud(rawDebug, detections);
+      logDebugCandidates(rawDebug);
+    }
 
     const inCooldown = Date.now() - lastLoggedAt < COOLDOWN_MS;
 
@@ -523,6 +612,29 @@ summaryMapBtn.addEventListener('click', () => {
 });
 summaryCsvBtn?.addEventListener('click', () => exportSession('csv'));
 summaryGeoBtn?.addEventListener('click', () => exportSession('geojson'));
+
+const debugToggleBtn = document.getElementById('debugToggle');
+function syncDebugToggleUi() {
+  if (!debugToggleBtn) return;
+  debugToggleBtn.dataset.on = debugMode ? '1' : '0';
+  debugToggleBtn.textContent = debugMode ? 'Debug ON' : 'Debug';
+  const hud = document.getElementById('debugHud');
+  if (hud && !debugMode) hud.hidden = true;
+  if (debugMode) {
+    setStatus(`Debug mode — raw ≥${(DEBUG_CONF * 100).toFixed(0)}% overlay (logging still ≥${(CONF_THRESHOLD * 100).toFixed(0)}%)`, 'warn');
+  }
+}
+debugToggleBtn?.addEventListener('click', () => {
+  debugMode = !debugMode;
+  try {
+    localStorage.setItem('potholeping_debug', debugMode ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+  syncDebugToggleUi();
+});
+syncDebugToggleUi();
+
 window.addEventListener('online', () => {
   scheduleFlush();
 });

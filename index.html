@@ -27,6 +27,7 @@
       <div class="controls">
         <button id="startBtn" type="button" disabled>Start Detecting</button>
         <button id="stopBtn" class="secondary" type="button" disabled>Stop</button>
+        <button id="debugToggle" class="secondary compact" type="button" title="Raw low-confidence candidates only — does not change logging">Debug</button>
       </div>
 
       <div class="meta">
@@ -34,6 +35,8 @@
         <p class="stat">Logged: <strong id="logCount">0</strong></p>
         <p id="pendingCount" class="pending-pill" hidden></p>
       </div>
+
+      <aside id="debugHud" class="debug-hud" hidden></aside>
     </div>
 
     <div
