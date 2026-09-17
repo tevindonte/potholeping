@@ -26,6 +26,7 @@ import {
   hadMotionSpikeNear,
 } from './motion.js';
 import { startProximityAlerts, stopProximityAlerts } from './alerts.js';
+import { acquireWakeLock, releaseWakeLock } from './wake.js';
 
 const INFER_INTERVAL_MS = 250;
 const CONFIRM_N = 3;
@@ -421,6 +422,8 @@ async function startDetecting() {
 
   motionOk = await requestMotionPermission();
   if (motionOk) startMotionTracking();
+  // Keep screen on so iOS doesn't dim mid-drive and kill the camera
+  await acquireWakeLock();
 
   try {
     await startCamera();
@@ -459,6 +462,7 @@ function stopDetecting({ showSummary = true } = {}) {
   stopCamera();
   stopMotionTracking();
   stopProximityAlerts();
+  releaseWakeLock();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   startBtn.disabled = false;
   stopBtn.disabled = true;
