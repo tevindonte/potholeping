@@ -7,7 +7,7 @@
 import * as ort from 'onnxruntime-web';
 
 const INPUT_SIZE = 640;
-const CONF_THRESHOLD = 0.4;
+const CONF_THRESHOLD = 0.45;
 const IOU_THRESHOLD = 0.45;
 
 let session = null;
