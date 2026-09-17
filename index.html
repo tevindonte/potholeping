@@ -32,6 +32,7 @@
       <div class="meta">
         <p id="status">Initializing…</p>
         <p class="stat">Logged: <strong id="logCount">0</strong></p>
+        <p id="pendingCount" class="pending-pill" hidden></p>
       </div>
     </div>
 
@@ -47,6 +48,8 @@
         <h2 id="summaryTitle">Drive summary</h2>
         <div id="summaryBody"></div>
         <div class="summary-actions">
+          <button id="summaryCsvBtn" class="secondary" type="button" disabled>CSV</button>
+          <button id="summaryGeoBtn" class="secondary" type="button" disabled>GeoJSON</button>
           <button id="summaryMapBtn" type="button">View map</button>
           <button id="summaryCloseBtn" class="secondary" type="button">Close</button>
         </div>

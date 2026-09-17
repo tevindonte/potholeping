@@ -1,5 +1,5 @@
 /**
- * Leaflet map: clusters, date filter, export, severity override.
+ * Leaflet map: clusters, date filter, export, severity override, verified badges.
  */
 
 import 'leaflet/dist/leaflet.css';
@@ -15,6 +15,7 @@ import {
   updateSeverity,
 } from './appwrite.js';
 import { severityColor } from './severity.js';
+import { exportCsv, exportGeoJson } from './export.js';
 
 import markerIcon2x from 'leaflet/dist/images/marker-icon-2x.png';
 import markerIcon from 'leaflet/dist/images/marker-icon.png';
@@ -44,11 +45,18 @@ function setStatus(msg, kind = '') {
   statusEl.dataset.kind = kind;
 }
 
-function severityIcon(severity) {
+function isVerified(row) {
+  return row.physicallyVerified === true || row.physicallyVerified === 'true';
+}
+
+function severityIcon(severity, verified) {
   const color = severityColor(severity);
+  const ring = verified ? 'pp-marker verified' : 'pp-marker';
   return L.divIcon({
-    className: 'pp-marker',
-    html: `<span style="background:${color}"></span>`,
+    className: ring,
+    html: `<span style="background:${color}"></span>${
+      verified ? '<i class="pp-verified-dot" title="Physically verified"></i>' : ''
+    }`,
     iconSize: [18, 18],
     iconAnchor: [9, 9],
     popupAnchor: [0, -10],
@@ -86,89 +94,10 @@ function filterRows(rows, range) {
   return rows.slice();
 }
 
-function csvEscape(value) {
-  const s = String(value ?? '');
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function downloadBlob(filename, blob) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function exportCsv(rows) {
-  const header = [
-    'id',
-    'latitude',
-    'longitude',
-    'severity',
-    'confidence',
-    'imageId',
-    'sessionId',
-    'createdAt',
-  ];
-  const lines = [header.join(',')];
-  for (const r of rows) {
-    lines.push(
-      [
-        r.$id,
-        r.latitude,
-        r.longitude,
-        r.severity,
-        r.confidence,
-        r.imageId,
-        r.sessionId,
-        r.createdAt,
-      ]
-        .map(csvEscape)
-        .join(',')
-    );
-  }
-  downloadBlob(
-    `potholeping-${Date.now()}.csv`,
-    new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' })
-  );
-}
-
-function exportGeoJson(rows) {
-  const geo = {
-    type: 'FeatureCollection',
-    features: rows
-      .map((r) => {
-        const lat = Number(r.latitude);
-        const lng = Number(r.longitude);
-        if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
-        return {
-          type: 'Feature',
-          geometry: { type: 'Point', coordinates: [lng, lat] },
-          properties: {
-            id: r.$id,
-            severity: Number(r.severity),
-            confidence: Number(r.confidence),
-            imageId: r.imageId,
-            sessionId: r.sessionId,
-            createdAt: r.createdAt,
-          },
-        };
-      })
-      .filter(Boolean),
-  };
-  downloadBlob(
-    `potholeping-${Date.now()}.geojson`,
-    new Blob([JSON.stringify(geo, null, 2)], {
-      type: 'application/geo+json;charset=utf-8',
-    })
-  );
-}
-
 function popupHtml(row) {
   const severity = Math.round(Number(row.severity)) || 3;
   const conf = Number(row.confidence);
+  const verified = isVerified(row);
   const imageUrl = row.imageId ? getImageUrl(row.imageId) : null;
   const options = [1, 2, 3, 4, 5]
     .map(
@@ -179,6 +108,9 @@ function popupHtml(row) {
 
   return `<div class="pp-popup" data-row-id="${row.$id}">
     <strong>Severity <span class="pp-sev-label">${severity}</span>/5</strong>
+    <p class="pp-verify-tag ${verified ? 'ok' : ''}">${
+      verified ? 'Physically verified' : 'Visual only'
+    }</p>
     <p>Confidence ${(conf * 100).toFixed(0)}%</p>
     <p>${formatTime(row.createdAt)}</p>
     <label class="pp-override">
@@ -212,7 +144,7 @@ function bindPopupHandlers(marker, row) {
         await updateSeverity(row.$id, next);
         row.severity = next;
         if (label) label.textContent = String(next);
-        marker.setIcon(severityIcon(next));
+        marker.setIcon(severityIcon(next, isVerified(row)));
         if (msg) {
           msg.textContent = 'Updated';
           msg.dataset.kind = 'ok';
@@ -244,7 +176,10 @@ function renderMarkers(rows) {
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
 
     const severity = Math.round(Number(row.severity)) || 3;
-    const marker = L.marker([lat, lng], { icon: severityIcon(severity) });
+    const verified = isVerified(row);
+    const marker = L.marker([lat, lng], {
+      icon: severityIcon(severity, verified),
+    });
     marker.bindPopup(popupHtml(row), { maxWidth: 280 });
     bindPopupHandlers(marker, row);
     clusterGroup.addLayer(marker);

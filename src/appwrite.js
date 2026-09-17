@@ -17,6 +17,7 @@ const TABLE_ID = import.meta.env.VITE_APPWRITE_TABLE_ID;
 const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID;
 
 let ready = false;
+let supportsPhysicallyVerified = true;
 
 /** Ensure an anonymous Appwrite session exists (idempotent). */
 export async function ensureSession() {
@@ -46,6 +47,8 @@ export async function logDetection({
   severity,
   confidence,
   sessionId,
+  createdAt,
+  physicallyVerified = false,
 }) {
   await ensureSession();
 
@@ -59,22 +62,45 @@ export async function logDetection({
     file,
   });
 
-  const row = await tablesDB.createRow({
-    databaseId: DATABASE_ID,
-    tableId: TABLE_ID,
-    rowId: ID.unique(),
-    data: {
-      latitude,
-      longitude,
-      severity,
-      confidence,
-      imageId: fileUpload.$id,
-      sessionId,
-      createdAt: new Date().toISOString(),
-    },
-  });
+  const base = {
+    latitude,
+    longitude,
+    severity,
+    confidence,
+    imageId: fileUpload.$id,
+    sessionId,
+    createdAt: createdAt || new Date().toISOString(),
+  };
 
-  return { row, imageId: fileUpload.$id };
+  const withVerified = supportsPhysicallyVerified
+    ? { ...base, physicallyVerified: Boolean(physicallyVerified) }
+    : base;
+
+  try {
+    const row = await tablesDB.createRow({
+      databaseId: DATABASE_ID,
+      tableId: TABLE_ID,
+      rowId: ID.unique(),
+      data: withVerified,
+    });
+    return { row, imageId: fileUpload.$id };
+  } catch (err) {
+    const msg = String(err?.message || err);
+    if (
+      supportsPhysicallyVerified &&
+      /physicallyVerified|Unknown attribute|Invalid document/i.test(msg)
+    ) {
+      supportsPhysicallyVerified = false;
+      const row = await tablesDB.createRow({
+        databaseId: DATABASE_ID,
+        tableId: TABLE_ID,
+        rowId: ID.unique(),
+        data: base,
+      });
+      return { row, imageId: fileUpload.$id };
+    }
+    throw err;
+  }
 }
 
 /** Patch severity on an existing row (requires Update permission on the table). */
@@ -98,6 +124,21 @@ export async function listDetections(limit = 500) {
     queries: [Query.limit(limit), Query.orderDesc('createdAt')],
   });
 
+  return response.rows ?? response.documents ?? [];
+}
+
+/** Fetch rows for one drive session. */
+export async function listDetectionsBySession(sessionId, limit = 200) {
+  await ensureSession();
+  const response = await tablesDB.listRows({
+    databaseId: DATABASE_ID,
+    tableId: TABLE_ID,
+    queries: [
+      Query.equal('sessionId', sessionId),
+      Query.limit(limit),
+      Query.orderDesc('createdAt'),
+    ],
+  });
   return response.rows ?? response.documents ?? [];
 }
 

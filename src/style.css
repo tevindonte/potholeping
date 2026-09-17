@@ -442,3 +442,64 @@ button.compact {
   gap: 0.65rem;
 }
 
+.pending-pill {
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #06140c;
+  background: var(--warn);
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+}
+
+.pp-marker.verified span {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px #3dba7a;
+}
+
+.pp-verified-dot {
+  position: absolute;
+  right: -2px;
+  top: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #3dba7a;
+  border: 1px solid #fff;
+}
+
+.pp-verify-tag {
+  margin: 0.15rem 0 0.35rem !important;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #666;
+}
+
+.pp-verify-tag.ok {
+  color: #1a7a45;
+}
+
+.proximity-banner {
+  position: fixed;
+  top: calc(0.75rem + env(safe-area-inset-top, 0px));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2500;
+  max-width: min(92vw, 420px);
+  padding: 0.7rem 1rem;
+  border-radius: 999px;
+  background: rgba(12, 20, 16, 0.94);
+  border: 1px solid rgba(61, 186, 122, 0.55);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-align: center;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.proximity-banner[hidden] {
+  display: none;
+}
+
+

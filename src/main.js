@@ -1,12 +1,31 @@
 /**
- * Camera feed + live detection loop + confirm/cooldown logging.
+ * Camera feed + live detection loop + offline queue + motion + alerts.
  */
 
 import './style.css';
 import { loadModel, detect } from './inference.js';
 import { computeSeverity, severityColor } from './severity.js';
-import { ensureSession, createSessionId, logDetection } from './appwrite.js';
+import {
+  ensureSession,
+  createSessionId,
+  logDetection,
+  listDetectionsBySession,
+} from './appwrite.js';
 import { unlockFeedback, pingLogged } from './feedback.js';
+import {
+  enqueueDetection,
+  flushQueue,
+  onQueueChange,
+  pendingCount,
+} from './queue.js';
+import { exportCsv, exportGeoJson } from './export.js';
+import {
+  requestMotionPermission,
+  startMotionTracking,
+  stopMotionTracking,
+  hadMotionSpikeNear,
+} from './motion.js';
+import { startProximityAlerts, stopProximityAlerts } from './alerts.js';
 
 const INFER_INTERVAL_MS = 250;
 const CONFIRM_N = 3;
@@ -20,10 +39,13 @@ const statusEl = document.getElementById('status');
 const startBtn = document.getElementById('startBtn');
 const stopBtn = document.getElementById('stopBtn');
 const logCountEl = document.getElementById('logCount');
+const pendingEl = document.getElementById('pendingCount');
 const summaryEl = document.getElementById('sessionSummary');
 const summaryBody = document.getElementById('summaryBody');
 const summaryMapBtn = document.getElementById('summaryMapBtn');
 const summaryCloseBtn = document.getElementById('summaryCloseBtn');
+const summaryCsvBtn = document.getElementById('summaryCsvBtn');
+const summaryGeoBtn = document.getElementById('summaryGeoBtn');
 
 let stream = null;
 let running = false;
@@ -33,14 +55,27 @@ let sessionStartedAt = 0;
 let streak = 0;
 let lastLoggedAt = 0;
 let loggedCount = 0;
-let sessionSeverities = [];
+let sessionLogs = [];
 let logging = false;
 let inferBusy = false;
+let flushing = false;
 let lastCoords = null;
+let motionOk = false;
 
 function setStatus(msg, kind = '') {
   statusEl.textContent = msg;
   statusEl.dataset.kind = kind;
+}
+
+function updatePendingUi(count) {
+  if (!pendingEl) return;
+  if (count > 0) {
+    pendingEl.hidden = false;
+    pendingEl.textContent = `${count} pending upload${count === 1 ? '' : 's'}`;
+  } else {
+    pendingEl.hidden = true;
+    pendingEl.textContent = '';
+  }
 }
 
 function syncCanvasSize() {
@@ -161,11 +196,13 @@ function formatDuration(ms) {
 }
 
 function showSessionSummary() {
-  const count = sessionSeverities.length;
-  const worst = count ? Math.max(...sessionSeverities) : 0;
+  const count = sessionLogs.length;
+  const severities = sessionLogs.map((l) => l.severity);
+  const worst = count ? Math.max(...severities) : 0;
   const avg = count
-    ? (sessionSeverities.reduce((a, b) => a + b, 0) / count).toFixed(1)
+    ? (severities.reduce((a, b) => a + b, 0) / count).toFixed(1)
     : '—';
+  const verified = sessionLogs.filter((l) => l.physicallyVerified).length;
   const duration = formatDuration(Date.now() - sessionStartedAt);
 
   if (count === 0) {
@@ -180,9 +217,14 @@ function showSessionSummary() {
       <ul class="summary-stats">
         <li><span>Worst severity</span><strong>${worst}/5</strong></li>
         <li><span>Average</span><strong>${avg}/5</strong></li>
+        <li><span>Physically verified</span><strong>${verified}/${count}</strong></li>
       </ul>
     `;
   }
+
+  const hasExport = count > 0;
+  if (summaryCsvBtn) summaryCsvBtn.disabled = !hasExport;
+  if (summaryGeoBtn) summaryGeoBtn.disabled = !hasExport;
 
   summaryEl.hidden = false;
   summaryEl.setAttribute('aria-hidden', 'false');
@@ -191,6 +233,30 @@ function showSessionSummary() {
 function hideSessionSummary() {
   summaryEl.hidden = true;
   summaryEl.setAttribute('aria-hidden', 'true');
+}
+
+async function uploadDetection(entry) {
+  return logDetection({
+    blob: entry.blob,
+    latitude: entry.latitude,
+    longitude: entry.longitude,
+    severity: entry.severity,
+    confidence: entry.confidence,
+    sessionId: entry.sessionId,
+    createdAt: entry.createdAt,
+    physicallyVerified: entry.physicallyVerified,
+  });
+}
+
+async function tryFlushQueue() {
+  if (flushing || !navigator.onLine) return;
+  flushing = true;
+  try {
+    const n = await flushQueue(uploadDetection);
+    if (n > 0) setStatus(`Synced ${n} queued upload${n === 1 ? '' : 's'}`, 'ok');
+  } finally {
+    flushing = false;
+  }
 }
 
 async function confirmAndLog(bestDet) {
@@ -206,30 +272,50 @@ async function confirmAndLog(bestDet) {
   setStatus('Logging pothole…', 'ok');
 
   try {
+    const physicallyVerified = motionOk && hadMotionSpikeNear(now, 1000);
     const severity = computeSeverity(
       bestDet,
       video.videoWidth,
       video.videoHeight,
-      streak
+      streak,
+      { physicallyVerified }
     );
     const blob = await captureFrameBlob();
-
-    await logDetection({
+    const createdAt = new Date().toISOString();
+    const entry = {
       blob,
       latitude: lastCoords.latitude,
       longitude: lastCoords.longitude,
       severity,
       confidence: bestDet.confidence,
       sessionId: driveSessionId,
-    });
+      createdAt,
+      physicallyVerified,
+    };
+
+    // Always queue first so offline never loses a detection
+    await enqueueDetection(entry);
 
     lastLoggedAt = Date.now();
     streak = 0;
     loggedCount += 1;
-    sessionSeverities.push(severity);
+    sessionLogs.push({ ...entry, blob: undefined });
     logCountEl.textContent = String(loggedCount);
     pingLogged();
-    setStatus(`Logged · severity ${severity} · cooldown ${COOLDOWN_MS / 1000}s`, 'ok');
+
+    const tag = physicallyVerified ? 'verified' : 'visual';
+    setStatus(
+      `Logged · S${severity} · ${tag} · cooldown ${COOLDOWN_MS / 1000}s`,
+      'ok'
+    );
+
+    // Immediate upload attempt; stays queued on failure
+    try {
+      await tryFlushQueue();
+    } catch (err) {
+      console.warn('Immediate upload failed; kept in queue', err);
+      setStatus(`Queued offline · S${severity} · will sync later`, 'warn');
+    }
   } catch (err) {
     console.error(err);
     setStatus(`Log failed: ${err.message || err}`, 'err');
@@ -279,23 +365,33 @@ async function startDetecting() {
   setStatus('Starting camera…');
   await unlockFeedback();
 
+  motionOk = await requestMotionPermission();
+  if (motionOk) startMotionTracking();
+
   try {
     await startCamera();
     driveSessionId = createSessionId();
     sessionStartedAt = Date.now();
-    sessionSeverities = [];
+    sessionLogs = [];
     streak = 0;
     lastLoggedAt = 0;
     loggedCount = 0;
     logCountEl.textContent = '0';
     running = true;
     stopBtn.disabled = false;
-    setStatus('Scanning for potholes…');
+    startProximityAlerts(() => lastCoords);
+    setStatus(
+      motionOk
+        ? 'Scanning for potholes… (motion on)'
+        : 'Scanning for potholes… (visual only)'
+    );
     inferTimer = setInterval(inferenceTick, INFER_INTERVAL_MS);
   } catch (err) {
     console.error(err);
     setStatus(`Camera error: ${err.message || err}`, 'err');
     startBtn.disabled = false;
+    stopMotionTracking();
+    stopProximityAlerts();
   }
 }
 
@@ -307,6 +403,8 @@ function stopDetecting({ showSummary = true } = {}) {
     inferTimer = null;
   }
   stopCamera();
+  stopMotionTracking();
+  stopProximityAlerts();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   startBtn.disabled = false;
   stopBtn.disabled = true;
@@ -317,10 +415,27 @@ function stopDetecting({ showSummary = true } = {}) {
   }
 }
 
+async function exportSession(kind) {
+  let rows = sessionLogs.slice();
+  try {
+    if (driveSessionId && navigator.onLine) {
+      const remote = await listDetectionsBySession(driveSessionId);
+      if (remote.length) rows = remote;
+    }
+  } catch (err) {
+    console.warn('Session fetch for export failed; using local logs', err);
+  }
+  if (!rows.length) return;
+  if (kind === 'csv') exportCsv(rows, `potholeping-session-${driveSessionId || 'local'}.csv`);
+  else exportGeoJson(rows, `potholeping-session-${driveSessionId || 'local'}.geojson`);
+}
+
 async function boot() {
   startBtn.disabled = true;
   stopBtn.disabled = true;
   setStatus('Loading model…');
+  onQueueChange(updatePendingUi);
+  updatePendingUi(await pendingCount());
 
   try {
     await loadModel();
@@ -335,6 +450,7 @@ async function boot() {
     setStatus('Model ready — allow location, then Start Detecting');
     startBtn.disabled = false;
     requestGeo();
+    await tryFlushQueue();
   } catch (err) {
     console.error(err);
     setStatus(`Appwrite init failed: ${err.message || err}`, 'err');
@@ -346,6 +462,11 @@ stopBtn.addEventListener('click', () => stopDetecting({ showSummary: true }));
 summaryCloseBtn.addEventListener('click', hideSessionSummary);
 summaryMapBtn.addEventListener('click', () => {
   window.location.href = '/map.html';
+});
+summaryCsvBtn?.addEventListener('click', () => exportSession('csv'));
+summaryGeoBtn?.addEventListener('click', () => exportSession('geojson'));
+window.addEventListener('online', () => {
+  tryFlushQueue();
 });
 window.addEventListener('beforeunload', () => stopDetecting({ showSummary: false }));
 
