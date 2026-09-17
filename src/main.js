@@ -296,6 +296,18 @@ async function tryFlushQueue() {
   }
 }
 
+/** Never run IDB/network flush on the inference critical path. */
+function scheduleFlush() {
+  const run = () => {
+    tryFlushQueue().catch((err) => console.warn('Deferred flush failed', err));
+  };
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(run, { timeout: 8000 });
+  } else {
+    setTimeout(run, 250);
+  }
+}
+
 async function confirmAndLog(bestDet) {
   if (logging) return;
   const now = Date.now();
@@ -356,13 +368,8 @@ async function confirmAndLog(bestDet) {
       'ok'
     );
 
-    // Immediate upload attempt; stays queued on failure
-    try {
-      await tryFlushQueue();
-    } catch (err) {
-      console.warn('Immediate upload failed; kept in queue', err);
-      setStatus(`Queued offline · S${severity} · will sync later`, 'warn');
-    }
+    // Defer Appwrite/IDB flush so inference keeps getting frames
+    scheduleFlush();
   } catch (err) {
     console.error(err);
     setStatus(`Log failed: ${err.message || err}`, 'err');
@@ -497,7 +504,7 @@ async function boot() {
     setStatus('Model ready — allow location, then Start Detecting');
     startBtn.disabled = false;
     requestGeo();
-    await tryFlushQueue();
+    scheduleFlush();
   } catch (err) {
     console.error(err);
     setStatus(`Appwrite init failed: ${err.message || err}`, 'err');
@@ -513,7 +520,7 @@ summaryMapBtn.addEventListener('click', () => {
 summaryCsvBtn?.addEventListener('click', () => exportSession('csv'));
 summaryGeoBtn?.addEventListener('click', () => exportSession('geojson'));
 window.addEventListener('online', () => {
-  tryFlushQueue();
+  scheduleFlush();
 });
 window.addEventListener('beforeunload', () => stopDetecting({ showSummary: false }));
 
