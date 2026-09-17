@@ -18,6 +18,7 @@ const BUCKET_ID = import.meta.env.VITE_APPWRITE_BUCKET_ID;
 
 let ready = false;
 let supportsPhysicallyVerified = true;
+let supportsModelVersion = true;
 
 /** Ensure an anonymous Appwrite session exists (idempotent). */
 export async function ensureSession() {
@@ -36,6 +37,35 @@ export function createSessionId() {
   return ID.unique();
 }
 
+function buildRowData({
+  latitude,
+  longitude,
+  severity,
+  confidence,
+  imageId,
+  sessionId,
+  createdAt,
+  physicallyVerified,
+  modelVersion,
+}) {
+  const data = {
+    latitude,
+    longitude,
+    severity,
+    confidence,
+    imageId,
+    sessionId,
+    createdAt: createdAt || new Date().toISOString(),
+  };
+  if (supportsPhysicallyVerified) {
+    data.physicallyVerified = Boolean(physicallyVerified);
+  }
+  if (supportsModelVersion && modelVersion) {
+    data.modelVersion = String(modelVersion);
+  }
+  return data;
+}
+
 /**
  * Upload a JPEG blob and create a detection row.
  * @returns {{ row, imageId }}
@@ -49,6 +79,7 @@ export async function logDetection({
   sessionId,
   createdAt,
   physicallyVerified = false,
+  modelVersion = 'v2',
 }) {
   await ensureSession();
 
@@ -62,41 +93,48 @@ export async function logDetection({
     file,
   });
 
-  const base = {
-    latitude,
-    longitude,
-    severity,
-    confidence,
-    imageId: fileUpload.$id,
-    sessionId,
-    createdAt: createdAt || new Date().toISOString(),
-  };
-
-  const withVerified = supportsPhysicallyVerified
-    ? { ...base, physicallyVerified: Boolean(physicallyVerified) }
-    : base;
-
-  try {
-    const row = await tablesDB.createRow({
+  const attempt = async () => {
+    const data = buildRowData({
+      latitude,
+      longitude,
+      severity,
+      confidence,
+      imageId: fileUpload.$id,
+      sessionId,
+      createdAt,
+      physicallyVerified,
+      modelVersion,
+    });
+    return tablesDB.createRow({
       databaseId: DATABASE_ID,
       tableId: TABLE_ID,
       rowId: ID.unique(),
-      data: withVerified,
+      data,
     });
+  };
+
+  try {
+    const row = await attempt();
     return { row, imageId: fileUpload.$id };
   } catch (err) {
     const msg = String(err?.message || err);
+    let retried = false;
     if (
       supportsPhysicallyVerified &&
       /physicallyVerified|Unknown attribute|Invalid document/i.test(msg)
     ) {
       supportsPhysicallyVerified = false;
-      const row = await tablesDB.createRow({
-        databaseId: DATABASE_ID,
-        tableId: TABLE_ID,
-        rowId: ID.unique(),
-        data: base,
-      });
+      retried = true;
+    }
+    if (
+      supportsModelVersion &&
+      /modelVersion|Unknown attribute|Invalid document/i.test(msg)
+    ) {
+      supportsModelVersion = false;
+      retried = true;
+    }
+    if (retried) {
+      const row = await attempt();
       return { row, imageId: fileUpload.$id };
     }
     throw err;

@@ -3,7 +3,8 @@
  */
 
 import './style.css';
-import { loadModel, inferFrame, CONF_THRESHOLD, getInputSize } from './inference.js';
+import { loadModel, inferFrame, CONF_THRESHOLD, getInputSize, getActiveModelVersion } from './inference.js';
+import { listModels, DEFAULT_MODEL_VERSION } from './models.js';
 import { computeSeverity, severityColor } from './severity.js';
 import {
   ensureSession,
@@ -66,6 +67,57 @@ const summaryMapBtn = document.getElementById('summaryMapBtn');
 const summaryCloseBtn = document.getElementById('summaryCloseBtn');
 const summaryCsvBtn = document.getElementById('summaryCsvBtn');
 const summaryGeoBtn = document.getElementById('summaryGeoBtn');
+const modelSelect = document.getElementById('modelSelect');
+
+function populateModelSelect() {
+  if (!modelSelect) return;
+  modelSelect.innerHTML = '';
+  for (const m of listModels()) {
+    const opt = document.createElement('option');
+    opt.value = m.id;
+    opt.textContent = m.label;
+    if (m.id === DEFAULT_MODEL_VERSION) opt.selected = true;
+    modelSelect.appendChild(opt);
+  }
+}
+
+function selectedModelVersion() {
+  return modelSelect?.value || getActiveModelVersion() || DEFAULT_MODEL_VERSION;
+}
+
+async function switchModel(version) {
+  const target = version || DEFAULT_MODEL_VERSION;
+  if (running) {
+    setStatus('Stop detecting before switching models', 'warn');
+    if (modelSelect) modelSelect.value = getActiveModelVersion();
+    return;
+  }
+  if (modelSelect) modelSelect.disabled = true;
+  setStatus(`Loading model ${target}…`);
+  try {
+    await loadModel(target);
+    setStatus(`Model ${getActiveModelVersion()} ready · imgsz ${getInputSize()}`);
+  } catch (err) {
+    console.error(err);
+    const hint =
+      target === 'v3'
+        ? ' Upload public/models/best_v3.onnx then redeploy.'
+        : '';
+    setStatus(`Failed to load ${target}: ${err.message || err}.${hint}`, 'err');
+    if (modelSelect) modelSelect.value = getActiveModelVersion();
+    if (target !== DEFAULT_MODEL_VERSION) {
+      try {
+        await loadModel(DEFAULT_MODEL_VERSION);
+        if (modelSelect) modelSelect.value = DEFAULT_MODEL_VERSION;
+        setStatus(`Fell back to ${DEFAULT_MODEL_VERSION} (production)`, 'warn');
+      } catch (e2) {
+        console.error(e2);
+      }
+    }
+  } finally {
+    if (modelSelect) modelSelect.disabled = false;
+  }
+}
 
 let stream = null;
 let running = false;
@@ -368,6 +420,7 @@ async function uploadDetection(entry) {
     sessionId: entry.sessionId,
     createdAt: entry.createdAt,
     physicallyVerified: entry.physicallyVerified,
+    modelVersion: entry.modelVersion || getActiveModelVersion(),
   });
 }
 
@@ -436,6 +489,7 @@ async function confirmAndLog(bestDet) {
       sessionId: driveSessionId,
       createdAt,
       physicallyVerified,
+      modelVersion: getActiveModelVersion(),
     };
 
     // Always queue first so offline never loses a detection
@@ -562,14 +616,16 @@ async function startDetecting() {
     startProximityAlerts(() => lastCoords);
     const imgsz = getInputSize();
     setStatus(
-      `Scanning · imgsz ${imgsz}${motionOk ? ' · motion on' : ''} — tip: angle mount up to cut hood from frame`
+      `Scanning · ${getActiveModelVersion()} · imgsz ${imgsz}${motionOk ? ' · motion on' : ''} — tip: angle mount up to cut hood from frame`
     );
+    if (modelSelect) modelSelect.disabled = true;
     inferIntervalMs = 0; // force timer recreate
     ensureInferTimer(INFER_INTERVAL_MS);
   } catch (err) {
     console.error(err);
     setStatus(`Camera error: ${err.message || err}`, 'err');
     startBtn.disabled = false;
+    if (modelSelect) modelSelect.disabled = false;
     stopMotionTracking();
     stopProximityAlerts();
     releaseWakeLock();
@@ -591,6 +647,7 @@ function stopDetecting({ showSummary = true } = {}) {
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  if (modelSelect) modelSelect.disabled = false;
   setStatus(wasRunning ? 'Stopped' : statusEl.textContent);
 
   if (showSummary && wasRunning && sessionStartedAt) {
@@ -616,12 +673,13 @@ async function exportSession(kind) {
 async function boot() {
   startBtn.disabled = true;
   stopBtn.disabled = true;
+  populateModelSelect();
   setStatus('Loading model…');
   onQueueChange(updatePendingUi);
   updatePendingUi(await pendingCount());
 
   try {
-    await loadModel();
+    await loadModel(selectedModelVersion());
   } catch (err) {
     console.error(err);
     setStatus(`Model init failed: ${err.message || err}`, 'err');
@@ -632,7 +690,7 @@ async function boot() {
     await ensureSession();
     const imgsz = getInputSize();
     setStatus(
-      `Ready · imgsz ${imgsz} — tip: raise/angle mount to minimize hood. Use ?imgsz=960 to trial higher res.`
+      `Ready · ${getActiveModelVersion()} · imgsz ${imgsz} — tip: raise/angle mount to minimize hood. Use ?imgsz=960 to trial higher res.`
     );
     startBtn.disabled = false;
     requestGeo();
@@ -645,6 +703,9 @@ async function boot() {
 
 startBtn.addEventListener('click', startDetecting);
 stopBtn.addEventListener('click', () => stopDetecting({ showSummary: true }));
+modelSelect?.addEventListener('change', () => {
+  switchModel(modelSelect.value);
+});
 summaryCloseBtn.addEventListener('click', hideSessionSummary);
 summaryMapBtn.addEventListener('click', () => {
   window.location.href = '/map.html';

@@ -5,6 +5,11 @@
  */
 
 import * as ort from 'onnxruntime-web';
+import {
+  DEFAULT_MODEL_VERSION,
+  getModelEntry,
+  modelPath,
+} from './models.js';
 
 let INPUT_SIZE = 640;
 const CONF_THRESHOLD = 0.45;
@@ -15,6 +20,11 @@ const IOU_THRESHOLD = 0.45;
 const SMALL_BOX_FRAC = 0.05;
 
 let session = null;
+let activeModelVersion = DEFAULT_MODEL_VERSION;
+
+export function getActiveModelVersion() {
+  return activeModelVersion;
+}
 
 export function getInputSize() {
   return INPUT_SIZE;
@@ -41,16 +51,38 @@ export function resolveInputSizeFromUrl() {
   return INPUT_SIZE;
 }
 
-export async function loadModel() {
+async function createSession(version) {
+  const entry = getModelEntry(version);
+  const path = modelPath(entry.id);
+  const next = await ort.InferenceSession.create(path, {
+    executionProviders: ['wasm'],
+  });
+  return { session: next, version: entry.id };
+}
+
+/**
+ * Load (or switch) ONNX model. Releases previous session when switching.
+ * @param {string} [version] model catalog id (default v2)
+ */
+export async function loadModel(version = DEFAULT_MODEL_VERSION) {
   resolveInputSizeFromUrl();
   const base = import.meta.env.BASE_URL || '/';
   ort.env.wasm.wasmPaths = `${base}ort/`;
   ort.env.wasm.numThreads = 1;
 
-  session = await ort.InferenceSession.create(
-    `${import.meta.env.BASE_URL}models/best.onnx`,
-    { executionProviders: ['wasm'] }
-  );
+  const target = getModelEntry(version).id;
+  const { session: next, version: loaded } = await createSession(target);
+
+  if (session) {
+    try {
+      await session.release();
+    } catch {
+      /* ignore */
+    }
+  }
+
+  session = next;
+  activeModelVersion = loaded;
   return session;
 }
 

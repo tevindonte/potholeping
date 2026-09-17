@@ -111,6 +111,7 @@ function popupHtml(row) {
     <p class="pp-verify-tag ${verified ? 'ok' : ''}">${
       verified ? 'Physically verified' : 'Visual only'
     }</p>
+    ${row.modelVersion ? `<p>Model ${row.modelVersion}</p>` : ''}
     <p>Confidence ${(conf * 100).toFixed(0)}%</p>
     <p>${formatTime(row.createdAt)}</p>
     <label class="pp-override">
