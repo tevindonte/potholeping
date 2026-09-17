@@ -59,8 +59,37 @@ let sessionLogs = [];
 let logging = false;
 let inferBusy = false;
 let flushing = false;
+/** @type {{ latitude: number, longitude: number, accuracy: number, timestamp: number } | null} */
 let lastCoords = null;
+let geoWatchId = null;
 let motionOk = false;
+
+/** Max age / accuracy for a fix to be considered fresh enough to log. */
+const GPS_MAX_AGE_MS = 8000;
+const GPS_MAX_ACCURACY_M = 75;
+
+const GEO_OPTS = {
+  enableHighAccuracy: true,
+  maximumAge: 0,
+  timeout: 10000,
+};
+
+function applyPosition(pos) {
+  lastCoords = {
+    latitude: pos.coords.latitude,
+    longitude: pos.coords.longitude,
+    accuracy: pos.coords.accuracy ?? Infinity,
+    timestamp: pos.timestamp || Date.now(),
+  };
+}
+
+function gpsIsFresh(coords = lastCoords) {
+  if (!coords) return false;
+  const age = Date.now() - coords.timestamp;
+  if (age > GPS_MAX_AGE_MS) return false;
+  if (coords.accuracy > GPS_MAX_ACCURACY_M) return false;
+  return true;
+}
 
 function setStatus(msg, kind = '') {
   statusEl.textContent = msg;
@@ -124,29 +153,37 @@ function requestGeo() {
     setStatus('Geolocation not supported on this device', 'warn');
     return;
   }
-  navigator.geolocation.getCurrentPosition(
+
+  // Continuous live track — never reuse a cached fix (maximumAge: 0).
+  // Logging reads `lastCoords`; it does not call getCurrentPosition per detection.
+  if (geoWatchId != null) {
+    navigator.geolocation.clearWatch(geoWatchId);
+    geoWatchId = null;
+  }
+
+  geoWatchId = navigator.geolocation.watchPosition(
     (pos) => {
-      lastCoords = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-      };
-      setStatus('Location ready — tap Start Detecting');
+      const first = !lastCoords;
+      applyPosition(pos);
+      if (first) setStatus('Location ready — tap Start Detecting');
     },
     (err) => {
-      setStatus(`Location permission needed: ${err.message}`, 'warn');
+      console.error('GPS watch error:', err);
+      if (!lastCoords) {
+        setStatus(`Location permission needed: ${err.message}`, 'warn');
+      }
     },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+    GEO_OPTS
   );
 
-  navigator.geolocation.watchPosition(
+  // Optional one-shot to populate faster while the watch warms up
+  navigator.geolocation.getCurrentPosition(
     (pos) => {
-      lastCoords = {
-        latitude: pos.coords.latitude,
-        longitude: pos.coords.longitude,
-      };
+      applyPosition(pos);
+      setStatus('Location ready — tap Start Detecting');
     },
     () => {},
-    { enableHighAccuracy: true, maximumAge: 2000 }
+    GEO_OPTS
   );
 }
 
@@ -267,11 +304,21 @@ async function confirmAndLog(bestDet) {
     setStatus('Waiting for GPS fix…', 'warn');
     return;
   }
+  if (!gpsIsFresh(lastCoords)) {
+    const ageSec = Math.round((Date.now() - lastCoords.timestamp) / 1000);
+    setStatus(
+      `Waiting for fresh GPS… (fix ~${Math.round(lastCoords.accuracy)}m, ${ageSec}s old)`,
+      'warn'
+    );
+    return;
+  }
 
   logging = true;
   setStatus('Logging pothole…', 'ok');
 
   try {
+    // Snapshot the live watchPosition fix at confirm time (not a new getCurrentPosition)
+    const coords = { ...lastCoords };
     const physicallyVerified = motionOk && hadMotionSpikeNear(now, 1000);
     const severity = computeSeverity(
       bestDet,
@@ -284,8 +331,8 @@ async function confirmAndLog(bestDet) {
     const createdAt = new Date().toISOString();
     const entry = {
       blob,
-      latitude: lastCoords.latitude,
-      longitude: lastCoords.longitude,
+      latitude: coords.latitude,
+      longitude: coords.longitude,
       severity,
       confidence: bestDet.confidence,
       sessionId: driveSessionId,
