@@ -2,7 +2,7 @@
  * On-device ONNX model catalog for A/B comparison.
  * v1 = original Cycle 3 weights
  * v2 = current production (expanded dataset / night + manhole fixes)
- * v3 = next training run — upload best_v3.onnx when ready
+ * v3 = scale-augmentation retrain
  */
 
 export const DEFAULT_MODEL_VERSION = 'v2';
@@ -21,7 +21,7 @@ export const MODEL_CATALOG = {
   },
   v3: {
     id: 'v3',
-    label: 'v3',
+    label: 'v3 (scale aug)',
     file: 'best_v3.onnx',
   },
 };
