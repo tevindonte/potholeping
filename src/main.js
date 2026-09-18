@@ -26,7 +26,7 @@ import {
   stopMotionTracking,
   hadMotionSpikeNear,
 } from './motion.js';
-import { startProximityAlerts, stopProximityAlerts } from './alerts.js';
+import { startProximityAlerts, stopProximityAlerts, suppressAlertAt } from './alerts.js';
 import { acquireWakeLock, releaseWakeLock } from './wake.js';
 import { updateSoftTracks, resetSoftTracks } from './softTrack.js';
 
@@ -503,6 +503,8 @@ async function confirmAndLog(bestDet) {
     sessionLogs.push({ ...entry, blob: undefined });
     logCountEl.textContent = String(loggedCount);
     pingLogged();
+    // Don't proximity-chime for a pin we just logged ourselves
+    suppressAlertAt(coords.latitude, coords.longitude);
 
     const tag = physicallyVerified ? 'verified' : 'visual';
     setStatus(

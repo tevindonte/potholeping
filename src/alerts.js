@@ -1,17 +1,21 @@
 /**
  * Heads-up proximity alerts for nearby previously logged potholes.
  *
- * Split fetch vs distance-check so we never hit Appwrite on the hot path
- * and keep haversine work off the inference cadence via requestIdleCallback.
+ * One alert per hazard per session — not per Appwrite row id.
+ * Duplicate logs at the same spot share different $ids; suppressing by id
+ * alone caused repeat chimes every poll while stationary in a cluster.
  */
 
 import { listDetections } from './appwrite.js';
 import { unlockFeedback } from './feedback.js';
 
 const ALERT_RADIUS_M = 125;
+/** After alerting, mute all pins within this distance of that hazard. */
+const SUPPRESS_RADIUS_M = 100;
 const CHECK_MS = 10000;
 const FETCH_MS = 45000;
 
+/** @type {Set<string>} */
 let alertedIds = new Set();
 let checkTimer = null;
 let fetchTimer = null;
@@ -23,6 +27,8 @@ let bannerEl = null;
 let onAlert = null;
 let getCoordsFn = null;
 let checking = false;
+/** Serialize checks so two idle callbacks can't both alert before suppress. */
+let checkGeneration = 0;
 
 function toRad(d) {
   return (d * Math.PI) / 180;
@@ -91,13 +97,31 @@ function scheduleIdle(fn) {
   }
 }
 
+/** Mute a pin and every cached neighbor within SUPPRESS_RADIUS_M. */
+function suppressCluster(lat, lng, primaryId = null) {
+  if (primaryId) alertedIds.add(primaryId);
+  for (const pin of cachedPins) {
+    if (alertedIds.has(pin.id)) continue;
+    if (haversineM(lat, lng, pin.lat, pin.lng) <= SUPPRESS_RADIUS_M) {
+      alertedIds.add(pin.id);
+    }
+  }
+}
+
+/**
+ * Call after logging a detection so we don't chime for the pin we just created.
+ */
+export function suppressAlertAt(lat, lng, rowId = null) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
+  suppressCluster(lat, lng, rowId);
+}
+
 async function refreshCache() {
   if (fetchInFlight) return;
   if (Date.now() - lastFetchAt < FETCH_MS - 500 && cachedPins.length) return;
   fetchInFlight = true;
   try {
     const rows = await listDetections(500);
-    // Pre-parse numbers once so checks stay cheap
     const pins = [];
     for (const row of rows) {
       const id = row.$id;
@@ -113,6 +137,14 @@ async function refreshCache() {
       });
     }
     cachedPins = pins;
+
+    // Re-apply spatial suppress so new duplicate rows near muted hazards stay quiet
+    const muted = [...alertedIds];
+    for (const id of muted) {
+      const pin = pins.find((p) => p.id === id);
+      if (pin) suppressCluster(pin.lat, pin.lng, pin.id);
+    }
+
     lastFetchAt = Date.now();
   } catch (err) {
     console.warn('Proximity fetch failed', err);
@@ -127,10 +159,14 @@ function runDistanceCheck() {
   if (!coords || !cachedPins.length) return;
 
   checking = true;
+  const gen = ++checkGeneration;
+  const { latitude, longitude } = coords;
+
   scheduleIdle(() => {
     try {
+      if (gen !== checkGeneration) return;
+
       let best = null;
-      const { latitude, longitude } = coords;
       for (let i = 0; i < cachedPins.length; i++) {
         const pin = cachedPins[i];
         if (alertedIds.has(pin.id)) continue;
@@ -141,13 +177,15 @@ function runDistanceCheck() {
       }
       if (!best) return;
 
-      alertedIds.add(best.pin.id);
+      // Suppress entire cluster BEFORE chime so overlapping polls can't re-fire
+      suppressCluster(best.pin.lat, best.pin.lng, best.pin.id);
+
       const msg = `Pothole reported ahead · ~${Math.round(best.d)}m · S${best.pin.severity}`;
       showBanner(msg);
       chimeAhead();
       if (typeof onAlert === 'function') onAlert(best);
     } finally {
-      checking = false;
+      if (gen === checkGeneration) checking = false;
     }
   });
 }
@@ -155,12 +193,12 @@ function runDistanceCheck() {
 export function startProximityAlerts(getCoords, opts = {}) {
   stopProximityAlerts();
   alertedIds = new Set();
+  checkGeneration = 0;
   onAlert = opts.onAlert || null;
   getCoordsFn = getCoords;
   unlockFeedback();
   ensureBanner();
 
-  // Warm cache in the background — never blocks Start Detecting
   scheduleIdle(() => {
     refreshCache();
   });
@@ -179,6 +217,8 @@ export function startProximityAlerts(getCoords, opts = {}) {
 }
 
 export function stopProximityAlerts() {
+  checkGeneration += 1;
+  checking = false;
   if (checkTimer) {
     clearInterval(checkTimer);
     checkTimer = null;
