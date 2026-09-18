@@ -302,6 +302,11 @@ export async function logDetection({
       }
     }
 
+    if (Object.keys(patch).length === 0) {
+      // Columns not provisioned yet — treat as confirmed without write
+      return { row: existing, imageId, action: 'confirmed' };
+    }
+
     const row = await updateRowWithFallback(existing.$id, patch);
     return { row, imageId, action: 'confirmed' };
   }
