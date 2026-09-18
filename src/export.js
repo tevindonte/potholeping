@@ -28,6 +28,8 @@ export function rowsToCsv(rows) {
     'createdAt',
     'physicallyVerified',
     'modelVersion',
+    'confirmCount',
+    'lastConfirmedAt',
     'imageId',
   ];
   const lines = [header.join(',')];
@@ -43,6 +45,8 @@ export function rowsToCsv(rows) {
         r.createdAt,
         r.physicallyVerified ?? false,
         r.modelVersion ?? '',
+        r.confirmCount ?? 1,
+        r.lastConfirmedAt ?? r.createdAt ?? '',
         r.imageId ?? '',
       ]
         .map(csvEscape)
@@ -71,6 +75,8 @@ export function rowsToGeoJson(rows) {
             createdAt: r.createdAt,
             physicallyVerified: Boolean(r.physicallyVerified),
             modelVersion: r.modelVersion ?? null,
+            confirmCount: Number(r.confirmCount) || 1,
+            lastConfirmedAt: r.lastConfirmedAt ?? r.createdAt ?? null,
             imageId: r.imageId ?? null,
           },
         };

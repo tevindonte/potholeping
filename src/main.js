@@ -434,6 +434,7 @@ async function uploadDetection(entry) {
     createdAt: entry.createdAt,
     physicallyVerified: entry.physicallyVerified,
     modelVersion: entry.modelVersion || getActiveModelVersion(),
+    skipSpatialMerge: Boolean(entry.skipSpatialMerge),
   });
 }
 
@@ -460,10 +461,11 @@ function scheduleFlush() {
   }
 }
 
-async function confirmAndLog(bestDet) {
-  if (logging) return;
+async function confirmAndLog(bestDet, opts = {}) {
+  const { skipSpatialMerge = false, bypassCooldown = false } = opts;
+  if (logging && !bypassCooldown) return;
   const now = Date.now();
-  if (now - lastLoggedAt < COOLDOWN_MS) return;
+  if (!bypassCooldown && now - lastLoggedAt < COOLDOWN_MS) return;
   if (!lastCoords) {
     setStatus('Waiting for GPS fix…', 'warn');
     return;
@@ -477,11 +479,10 @@ async function confirmAndLog(bestDet) {
     return;
   }
 
-  logging = true;
+  if (!bypassCooldown) logging = true;
   setStatus('Logging pothole…', 'ok');
 
   try {
-    // Snapshot the live watchPosition fix at confirm time (not a new getCurrentPosition)
     const coords = { ...lastCoords };
     const physicallyVerified = motionOk && hadMotionSpikeNear(now, 1000);
     const severity = computeSeverity(
@@ -503,31 +504,51 @@ async function confirmAndLog(bestDet) {
       createdAt,
       physicallyVerified,
       modelVersion: getActiveModelVersion(),
+      skipSpatialMerge,
     };
 
-    // Always queue first so offline never loses a detection
     await enqueueDetection(entry);
 
-    lastLoggedAt = Date.now();
+    if (!bypassCooldown) lastLoggedAt = Date.now();
     streak = 0;
     loggedCount += 1;
     sessionLogs.push({ ...entry, blob: undefined });
     logCountEl.textContent = String(loggedCount);
     pingLogged();
-    // Don't proximity-chime for a pin we just logged ourselves
     suppressAlertAt(coords.latitude, coords.longitude);
 
     const tag = physicallyVerified ? 'verified' : 'visual';
     setStatus(
-      `Logged · S${severity} · ${tag} · cooldown ${COOLDOWN_MS / 1000}s`,
+      `Queued · S${severity} · ${tag}${skipSpatialMerge ? ' · multi' : ''} · sync soon`,
       'ok'
     );
 
-    // Defer Appwrite/IDB flush so inference keeps getting frames
     scheduleFlush();
   } catch (err) {
     console.error(err);
     setStatus(`Log failed: ${err.message || err}`, 'err');
+  } finally {
+    if (!bypassCooldown) logging = false;
+  }
+}
+
+/** Confirm all NMS boxes in one frame as separate pins (no GPS merge). */
+async function confirmFrameDetections(detections) {
+  if (!detections?.length) return;
+  if (logging) return;
+  const now = Date.now();
+  if (now - lastLoggedAt < COOLDOWN_MS) return;
+
+  logging = true;
+  try {
+    const multi = detections.length > 1;
+    for (let i = 0; i < detections.length; i++) {
+      await confirmAndLog(detections[i], {
+        skipSpatialMerge: multi,
+        bypassCooldown: true,
+      });
+    }
+    lastLoggedAt = Date.now();
   } finally {
     logging = false;
   }
@@ -567,10 +588,7 @@ async function inferenceTick() {
         streak += 1;
         setStatus(`Detecting… streak ${streak}/${CONFIRM_N}`);
         if (streak >= CONFIRM_N) {
-          const best = detections.reduce((a, b) =>
-            a.confidence >= b.confidence ? a : b
-          );
-          await confirmAndLog(best);
+          await confirmFrameDetections(detections);
         }
       } else if (soft.ready) {
         streak = 0;

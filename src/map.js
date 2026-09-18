@@ -113,7 +113,13 @@ function popupHtml(row) {
     }</p>
     ${row.modelVersion ? `<p>Model ${row.modelVersion}</p>` : ''}
     <p>Confidence ${(conf * 100).toFixed(0)}%</p>
-    <p>${formatTime(row.createdAt)}</p>
+    <p>Confirmed ${Number(row.confirmCount) > 0 ? Number(row.confirmCount) : 1}×</p>
+    <p>First ${formatTime(row.createdAt)}</p>
+    ${
+      row.lastConfirmedAt && row.lastConfirmedAt !== row.createdAt
+        ? `<p>Last seen ${formatTime(row.lastConfirmedAt)}</p>`
+        : ''
+    }
     <label class="pp-override">
       Correct severity
       <select class="pp-severity-select" data-row-id="${row.$id}">${options}</select>
