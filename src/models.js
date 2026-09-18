@@ -1,13 +1,19 @@
 /**
  * On-device ONNX model catalog for A/B comparison.
- * v2 = current production weights (best.onnx).
- * v3 = next training run (best_v3.onnx) — upload when ready.
+ * v1 = original Cycle 3 weights
+ * v2 = current production (expanded dataset / night + manhole fixes)
+ * v3 = next training run — upload best_v3.onnx when ready
  */
 
 export const DEFAULT_MODEL_VERSION = 'v2';
 
 /** @type {Record<string, { id: string, label: string, file: string }>} */
 export const MODEL_CATALOG = {
+  v1: {
+    id: 'v1',
+    label: 'v1 (Cycle 3)',
+    file: 'best_v1.onnx',
+  },
   v2: {
     id: 'v2',
     label: 'v2 (production)',

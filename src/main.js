@@ -102,7 +102,9 @@ async function switchModel(version) {
     const hint =
       target === 'v3'
         ? ' Upload public/models/best_v3.onnx then redeploy.'
-        : '';
+        : target === 'v1'
+          ? ' Missing public/models/best_v1.onnx.'
+          : '';
     setStatus(`Failed to load ${target}: ${err.message || err}.${hint}`, 'err');
     if (modelSelect) modelSelect.value = getActiveModelVersion();
     if (target !== DEFAULT_MODEL_VERSION) {

@@ -123,11 +123,16 @@ a:hover {
   height: 100%;
   /* contain keeps overlay boxes aligned with letterboxed model coords */
   object-fit: contain;
+}
+
+.stage video {
   background: #050805;
 }
 
 .stage canvas {
   pointer-events: none;
+  /* transparent — must not paint a background or it hides the video */
+  background: transparent;
 }
 
 .controls {
