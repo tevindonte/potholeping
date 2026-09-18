@@ -26,7 +26,14 @@ import {
   stopMotionTracking,
   hadMotionSpikeNear,
 } from './motion.js';
-import { startProximityAlerts, stopProximityAlerts, suppressAlertAt } from './alerts.js';
+import {
+  startProximityAlerts,
+  stopProximityAlerts,
+  suppressAlertAt,
+  setAlertsEnabled,
+  loadAlertsEnabledPreference,
+  getAlertsEnabled,
+} from './alerts.js';
 import { acquireWakeLock, releaseWakeLock } from './wake.js';
 import { updateSoftTracks, resetSoftTracks } from './softTrack.js';
 
@@ -154,6 +161,10 @@ function applyPosition(pos) {
     longitude: pos.coords.longitude,
     accuracy: pos.coords.accuracy ?? Infinity,
     timestamp: pos.timestamp || Date.now(),
+    heading:
+      typeof pos.coords.heading === 'number' && pos.coords.heading >= 0
+        ? pos.coords.heading
+        : undefined,
   };
 }
 
@@ -619,8 +630,9 @@ async function startDetecting() {
     stopBtn.disabled = false;
     startProximityAlerts(() => lastCoords);
     const imgsz = getInputSize();
+    const alertNote = getAlertsEnabled() ? '' : ' · alerts off';
     setStatus(
-      `Scanning · ${getActiveModelVersion()} · imgsz ${imgsz}${motionOk ? ' · motion on' : ''} — tip: angle mount up to cut hood from frame`
+      `Scanning · ${getActiveModelVersion()} · imgsz ${imgsz}${motionOk ? ' · motion on' : ''}${alertNote} — tip: angle mount up to cut hood from frame`
     );
     if (modelSelect) modelSelect.disabled = true;
     inferIntervalMs = 0; // force timer recreate
@@ -717,6 +729,24 @@ summaryMapBtn.addEventListener('click', () => {
 summaryCsvBtn?.addEventListener('click', () => exportSession('csv'));
 summaryGeoBtn?.addEventListener('click', () => exportSession('geojson'));
 
+const alertsToggle = document.getElementById('alertsToggle');
+function syncAlertsToggleUi() {
+  if (!alertsToggle) return;
+  alertsToggle.checked = getAlertsEnabled();
+}
+alertsToggle?.addEventListener('change', () => {
+  setAlertsEnabled(alertsToggle.checked);
+  if (running) {
+    if (alertsToggle.checked) {
+      startProximityAlerts(() => lastCoords);
+      setStatus('Proximity alerts on', 'ok');
+    } else {
+      stopProximityAlerts();
+      setStatus('Proximity alerts off', 'warn');
+    }
+  }
+});
+
 const debugToggleBtn = document.getElementById('debugToggle');
 function syncDebugToggleUi() {
   if (!debugToggleBtn) return;
@@ -737,6 +767,8 @@ debugToggleBtn?.addEventListener('click', () => {
   }
   syncDebugToggleUi();
 });
+loadAlertsEnabledPreference();
+syncAlertsToggleUi();
 syncDebugToggleUi();
 
 window.addEventListener('online', () => {

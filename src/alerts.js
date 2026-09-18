@@ -1,19 +1,23 @@
 /**
- * Heads-up proximity alerts for nearby previously logged potholes.
+ * Heads-up proximity alerts — ahead-only, clustered, optional.
  *
- * One alert per hazard per session — not per Appwrite row id.
- * Duplicate logs at the same spot share different $ids; suppressing by id
- * alone caused repeat chimes every poll while stationary in a cluster.
+ * - Toggleable on/off
+ * - Direction filter using GPS travel bearing (not behind/side)
+ * - Clusters nearby ahead pins into one banner
+ * - Rate-limits + per-session spatial mute
  */
 
 import { listDetections } from './appwrite.js';
 import { unlockFeedback } from './feedback.js';
 
-const ALERT_RADIUS_M = 125;
-/** After alerting, mute all pins within this distance of that hazard. */
-const SUPPRESS_RADIUS_M = 100;
+const ALERT_RADIUS_M = 160;
+const SUPPRESS_RADIUS_M = 120;
+const CLUSTER_GAP_M = 90;
+const AHEAD_HALF_ANGLE_DEG = 65;
 const CHECK_MS = 10000;
 const FETCH_MS = 45000;
+const MIN_ALERT_INTERVAL_MS = 40000;
+const MIN_MOVE_M_FOR_HEADING = 4;
 
 /** @type {Set<string>} */
 let alertedIds = new Set();
@@ -27,11 +31,19 @@ let bannerEl = null;
 let onAlert = null;
 let getCoordsFn = null;
 let checking = false;
-/** Serialize checks so two idle callbacks can't both alert before suppress. */
 let checkGeneration = 0;
+let alertsEnabled = true;
+let lastAlertAt = 0;
+/** @type {{ lat: number, lng: number, t: number } | null} */
+let prevFix = null;
+let travelHeadingDeg = null;
 
 function toRad(d) {
   return (d * Math.PI) / 180;
+}
+
+function toDeg(r) {
+  return (r * 180) / Math.PI;
 }
 
 /** Haversine distance in meters. */
@@ -43,6 +55,48 @@ export function haversineM(lat1, lon1, lat2, lon2) {
     Math.sin(dLat / 2) ** 2 +
     Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+/** Initial bearing from A→B in degrees [0, 360). */
+export function bearingDeg(lat1, lon1, lat2, lon2) {
+  const φ1 = toRad(lat1);
+  const φ2 = toRad(lat2);
+  const Δλ = toRad(lon2 - lon1);
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x =
+    Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function angleDeltaDeg(a, b) {
+  let d = Math.abs(a - b) % 360;
+  if (d > 180) d = 360 - d;
+  return d;
+}
+
+export function setAlertsEnabled(on) {
+  alertsEnabled = Boolean(on);
+  try {
+    localStorage.setItem('potholeping_alerts', alertsEnabled ? '1' : '0');
+  } catch {
+    /* ignore */
+  }
+  if (!alertsEnabled && bannerEl) bannerEl.hidden = true;
+}
+
+export function getAlertsEnabled() {
+  return alertsEnabled;
+}
+
+export function loadAlertsEnabledPreference() {
+  try {
+    const v = localStorage.getItem('potholeping_alerts');
+    if (v === '0') alertsEnabled = false;
+    else if (v === '1') alertsEnabled = true;
+  } catch {
+    /* ignore */
+  }
+  return alertsEnabled;
 }
 
 function ensureBanner() {
@@ -62,7 +116,7 @@ function showBanner(text) {
   clearTimeout(showBanner._t);
   showBanner._t = setTimeout(() => {
     el.hidden = true;
-  }, 3500);
+  }, 4000);
 }
 
 function chimeAhead() {
@@ -97,7 +151,6 @@ function scheduleIdle(fn) {
   }
 }
 
-/** Mute a pin and every cached neighbor within SUPPRESS_RADIUS_M. */
 function suppressCluster(lat, lng, primaryId = null) {
   if (primaryId) alertedIds.add(primaryId);
   for (const pin of cachedPins) {
@@ -108,12 +161,33 @@ function suppressCluster(lat, lng, primaryId = null) {
   }
 }
 
-/**
- * Call after logging a detection so we don't chime for the pin we just created.
- */
 export function suppressAlertAt(lat, lng, rowId = null) {
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return;
   suppressCluster(lat, lng, rowId);
+}
+
+function updateTravelHeading(coords) {
+  const lat = coords.latitude;
+  const lng = coords.longitude;
+  const t = coords.timestamp || Date.now();
+  if (prevFix) {
+    const moved = haversineM(prevFix.lat, prevFix.lng, lat, lng);
+    if (moved >= MIN_MOVE_M_FOR_HEADING) {
+      travelHeadingDeg = bearingDeg(prevFix.lat, prevFix.lng, lat, lng);
+      prevFix = { lat, lng, t };
+    }
+  } else {
+    prevFix = { lat, lng, t };
+  }
+  // Prefer device course when GPS provides it
+  if (
+    Number.isFinite(coords.heading) &&
+    coords.heading >= 0 &&
+    coords.accuracy != null &&
+    coords.accuracy < 50
+  ) {
+    travelHeadingDeg = coords.heading;
+  }
 }
 
 async function refreshCache() {
@@ -138,7 +212,6 @@ async function refreshCache() {
     }
     cachedPins = pins;
 
-    // Re-apply spatial suppress so new duplicate rows near muted hazards stay quiet
     const muted = [...alertedIds];
     for (const id of muted) {
       const pin = pins.find((p) => p.id === id);
@@ -153,37 +226,78 @@ async function refreshCache() {
   }
 }
 
+function collectAheadPins(latitude, longitude, heading) {
+  const ahead = [];
+  for (const pin of cachedPins) {
+    if (alertedIds.has(pin.id)) continue;
+    const d = haversineM(latitude, longitude, pin.lat, pin.lng);
+    if (d > ALERT_RADIUS_M || d < 3) continue;
+    const toPin = bearingDeg(latitude, longitude, pin.lat, pin.lng);
+    if (angleDeltaDeg(heading, toPin) > AHEAD_HALF_ANGLE_DEG) continue;
+    ahead.push({ pin, d, toPin });
+  }
+  ahead.sort((a, b) => a.d - b.d);
+  return ahead;
+}
+
+/** Group ahead pins into one forward cluster (gap-based along approach). */
+function clusterAhead(ahead) {
+  if (!ahead.length) return null;
+  const group = [ahead[0]];
+  for (let i = 1; i < ahead.length; i++) {
+    const prev = group[group.length - 1];
+    if (ahead[i].d - prev.d <= CLUSTER_GAP_M) group.push(ahead[i]);
+    else break;
+  }
+  const nearest = group[0];
+  const worst = group.reduce((a, b) =>
+    a.pin.severity >= b.pin.severity ? a : b
+  );
+  return { group, nearest, worst };
+}
+
+function formatClusterMessage(cluster) {
+  const n = cluster.group.length;
+  const dist = Math.round(cluster.nearest.d);
+  const sev = cluster.worst.pin.severity;
+  if (n === 1) {
+    return `Pothole ahead · ~${dist}m · S${sev}`;
+  }
+  return `${n} potholes ahead · nearest ~${dist}m · worst S${sev}`;
+}
+
 function runDistanceCheck() {
-  if (checking) return;
+  if (!alertsEnabled || checking) return;
   const coords = getCoordsFn?.();
   if (!coords || !cachedPins.length) return;
+
+  updateTravelHeading(coords);
+  if (travelHeadingDeg == null) return; // wait until we know direction of travel
+
+  if (Date.now() - lastAlertAt < MIN_ALERT_INTERVAL_MS) return;
 
   checking = true;
   const gen = ++checkGeneration;
   const { latitude, longitude } = coords;
+  const heading = travelHeadingDeg;
 
   scheduleIdle(() => {
     try {
-      if (gen !== checkGeneration) return;
+      if (gen !== checkGeneration || !alertsEnabled) return;
 
-      let best = null;
-      for (let i = 0; i < cachedPins.length; i++) {
-        const pin = cachedPins[i];
-        if (alertedIds.has(pin.id)) continue;
-        const d = haversineM(latitude, longitude, pin.lat, pin.lng);
-        if (d <= ALERT_RADIUS_M && (!best || d < best.d)) {
-          best = { pin, d };
-        }
+      const ahead = collectAheadPins(latitude, longitude, heading);
+      const cluster = clusterAhead(ahead);
+      if (!cluster) return;
+
+      // Mute every pin in the cluster (and neighbors) before sounding
+      for (const item of cluster.group) {
+        suppressCluster(item.pin.lat, item.pin.lng, item.pin.id);
       }
-      if (!best) return;
 
-      // Suppress entire cluster BEFORE chime so overlapping polls can't re-fire
-      suppressCluster(best.pin.lat, best.pin.lng, best.pin.id);
-
-      const msg = `Pothole reported ahead · ~${Math.round(best.d)}m · S${best.pin.severity}`;
-      showBanner(msg);
+      lastAlertAt = Date.now();
+      showBanner(formatClusterMessage(cluster));
       chimeAhead();
-      if (typeof onAlert === 'function') onAlert(best);
+      if (typeof onAlert === 'function') onAlert(cluster);
     } finally {
       if (gen === checkGeneration) checking = false;
     }
@@ -194,10 +308,15 @@ export function startProximityAlerts(getCoords, opts = {}) {
   stopProximityAlerts();
   alertedIds = new Set();
   checkGeneration = 0;
+  lastAlertAt = 0;
+  prevFix = null;
+  travelHeadingDeg = null;
   onAlert = opts.onAlert || null;
   getCoordsFn = getCoords;
   unlockFeedback();
   ensureBanner();
+
+  if (!alertsEnabled) return;
 
   scheduleIdle(() => {
     refreshCache();
@@ -205,7 +324,7 @@ export function startProximityAlerts(getCoords, opts = {}) {
 
   fetchTimer = setInterval(() => {
     scheduleIdle(() => {
-      refreshCache();
+      if (alertsEnabled) refreshCache();
     });
   }, FETCH_MS);
 
