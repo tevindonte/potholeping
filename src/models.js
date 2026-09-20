@@ -3,6 +3,7 @@
  * v1 = original Cycle 3 weights
  * v2 = current production (expanded dataset / night + manhole fixes)
  * v3 = scale-augmentation retrain
+ * v4 = next comparison candidate
  */
 
 export const DEFAULT_MODEL_VERSION = 'v2';
@@ -23,6 +24,11 @@ export const MODEL_CATALOG = {
     id: 'v3',
     label: 'v3 (scale aug)',
     file: 'best_v3.onnx',
+  },
+  v4: {
+    id: 'v4',
+    label: 'v4',
+    file: 'best_v4.onnx',
   },
 };
 

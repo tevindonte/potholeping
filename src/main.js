@@ -107,11 +107,13 @@ async function switchModel(version) {
   } catch (err) {
     console.error(err);
     const hint =
-      target === 'v3'
-        ? ' Upload public/models/best_v3.onnx then redeploy.'
-        : target === 'v1'
-          ? ' Missing public/models/best_v1.onnx.'
-          : '';
+      target === 'v4'
+        ? ' Upload public/models/best_v4.onnx then redeploy.'
+        : target === 'v3'
+          ? ' Upload public/models/best_v3.onnx then redeploy.'
+          : target === 'v1'
+            ? ' Missing public/models/best_v1.onnx.'
+            : '';
     setStatus(`Failed to load ${target}: ${err.message || err}.${hint}`, 'err');
     if (modelSelect) modelSelect.value = getActiveModelVersion();
     if (target !== DEFAULT_MODEL_VERSION) {
