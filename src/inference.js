@@ -18,6 +18,11 @@ const SOFT_CONF_MIN = 0.22;
 const IOU_THRESHOLD = 0.45;
 /** Box area / frame area below this ≈ distant/small — eligible for soft path. */
 const SMALL_BOX_FRAC = 0.05;
+/**
+ * Always-on road ROI: keep bottom fraction of the frame for inference
+ * (drops hood/sky). Overlay boxes are remapped to full-frame coords.
+ */
+const ROAD_CROP_FRAC = 0.65;
 
 let session = null;
 let activeModelVersion = DEFAULT_MODEL_VERSION;
@@ -87,16 +92,22 @@ export async function loadModel(version = DEFAULT_MODEL_VERSION) {
 }
 
 /**
- * Letterbox resize to INPUT_SIZE², return float32 CHW tensor + scale metadata.
+ * Crop to bottom ROAD_CROP_FRAC, letterbox to INPUT_SIZE², return tensor + meta.
+ * Boxes are later mapped back into full-frame coordinates for the overlay.
  */
 export function preprocess(source) {
-  const srcW = source.videoWidth || source.width;
-  const srcH = source.videoHeight || source.height;
+  const fullW = source.videoWidth || source.width;
+  const fullH = source.videoHeight || source.height;
   const size = INPUT_SIZE;
 
-  const scale = Math.min(size / srcW, size / srcH);
-  const newW = Math.round(srcW * scale);
-  const newH = Math.round(srcH * scale);
+  const cropH = Math.max(1, Math.round(fullH * ROAD_CROP_FRAC));
+  const cropOffsetY = Math.max(0, fullH - cropH);
+  const cropW = fullW;
+  const cropOffsetX = 0;
+
+  const scale = Math.min(size / cropW, size / cropH);
+  const newW = Math.round(cropW * scale);
+  const newH = Math.round(cropH * scale);
   const padX = (size - newW) / 2;
   const padY = (size - newH) / 2;
 
@@ -107,7 +118,18 @@ export function preprocess(source) {
 
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, size, size);
-  ctx.drawImage(source, padX, padY, newW, newH);
+  // Source rect = road ROI; dest = letterboxed into model input
+  ctx.drawImage(
+    source,
+    cropOffsetX,
+    cropOffsetY,
+    cropW,
+    cropH,
+    padX,
+    padY,
+    newW,
+    newH
+  );
 
   const { data } = ctx.getImageData(0, 0, size, size);
   const float32 = new Float32Array(3 * size * size);
@@ -120,7 +142,20 @@ export function preprocess(source) {
   }
 
   const tensor = new ort.Tensor('float32', float32, [1, 3, size, size]);
-  return { tensor, scale, padX, padY, srcW, srcH };
+  return {
+    tensor,
+    scale,
+    padX,
+    padY,
+    /** Crop dimensions (letterbox source space). */
+    srcW: cropW,
+    srcH: cropH,
+    /** Full camera frame — overlay / severity use these. */
+    fullW,
+    fullH,
+    cropOffsetX,
+    cropOffsetY,
+  };
 }
 
 export function iou(a, b) {
@@ -152,13 +187,23 @@ function nms(boxes, iouThresh = IOU_THRESHOLD) {
 }
 
 /**
- * Parse raw YOLOv8 output into boxes in original image coords.
+ * Parse raw YOLOv8 output into boxes in full camera-frame coordinates.
  */
 export function postprocess(output, meta, confThresh = CONF_THRESHOLD, applyNms = true) {
   const data = output.data;
   const numPreds = output.dims[2];
-  const { scale, padX, padY, srcW, srcH } = meta;
-  const frameArea = srcW * srcH;
+  const {
+    scale,
+    padX,
+    padY,
+    fullW,
+    fullH,
+    cropOffsetX = 0,
+    cropOffsetY = 0,
+  } = meta;
+  const outW = fullW ?? meta.srcW;
+  const outH = fullH ?? meta.srcH;
+  const frameArea = outW * outH;
 
   const candidates = [];
   for (let i = 0; i < numPreds; i++) {
@@ -170,15 +215,16 @@ export function postprocess(output, meta, confThresh = CONF_THRESHOLD, applyNms 
     const w = data[2 * numPreds + i];
     const h = data[3 * numPreds + i];
 
-    let x1 = (cx - w / 2 - padX) / scale;
-    let y1 = (cy - h / 2 - padY) / scale;
-    let x2 = (cx + w / 2 - padX) / scale;
-    let y2 = (cy + h / 2 - padY) / scale;
+    // Letterbox → crop space, then offset into full frame
+    let x1 = (cx - w / 2 - padX) / scale + cropOffsetX;
+    let y1 = (cy - h / 2 - padY) / scale + cropOffsetY;
+    let x2 = (cx + w / 2 - padX) / scale + cropOffsetX;
+    let y2 = (cy + h / 2 - padY) / scale + cropOffsetY;
 
-    x1 = Math.max(0, Math.min(srcW, x1));
-    y1 = Math.max(0, Math.min(srcH, y1));
-    x2 = Math.max(0, Math.min(srcW, x2));
-    y2 = Math.max(0, Math.min(srcH, y2));
+    x1 = Math.max(0, Math.min(outW, x1));
+    y1 = Math.max(0, Math.min(outH, y1));
+    x2 = Math.max(0, Math.min(outW, x2));
+    y2 = Math.max(0, Math.min(outH, y2));
 
     if (x2 <= x1 || y2 <= y1) continue;
 
@@ -239,10 +285,9 @@ export async function inferFrame(
   const detections = postprocess(output, meta, CONF_THRESHOLD, true);
   // One low pass for soft path (+ debug if needed)
   const lowPass = postprocess(output, meta, SOFT_CONF_MIN, false);
-  const softCandidates = softCandidatesFrom(
-    lowPass,
-    meta.srcW * meta.srcH
-  );
+  const frameArea =
+    (meta.fullW || meta.srcW) * (meta.fullH || meta.srcH);
+  const softCandidates = softCandidatesFrom(lowPass, frameArea);
   const rawDebug = includeRawDebug
     ? postprocess(output, meta, debugThresh, false)
     : null;
@@ -260,5 +305,6 @@ export {
   CONF_THRESHOLD,
   SOFT_CONF_MIN,
   SMALL_BOX_FRAC,
+  ROAD_CROP_FRAC,
   INPUT_SIZE,
 };

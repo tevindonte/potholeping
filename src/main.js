@@ -406,14 +406,28 @@ function requestGeo() {
 }
 
 async function startCamera() {
-  stream = await navigator.mediaDevices.getUserMedia({
+  const base = {
     audio: false,
     video: {
       facingMode: { ideal: 'environment' },
-      width: { ideal: 1280 },
-      height: { ideal: 720 },
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
     },
-  });
+  };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia(base);
+  } catch (err) {
+    // Some devices reject exact max constraints — retry with ideal-only 720p bias
+    console.warn('720p max constraints failed; retrying ideal-only', err);
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        facingMode: { ideal: 'environment' },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+    });
+  }
   video.srcObject = stream;
   await video.play();
   syncCanvasSize();
