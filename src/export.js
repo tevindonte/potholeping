@@ -31,6 +31,8 @@ export function rowsToCsv(rows) {
     'confirmCount',
     'lastConfirmedAt',
     'imageId',
+    'cameraImageId',
+    'nearbyCamera',
   ];
   const lines = [header.join(',')];
   for (const r of rows) {
@@ -48,6 +50,12 @@ export function rowsToCsv(rows) {
         r.confirmCount ?? 1,
         r.lastConfirmedAt ?? r.createdAt ?? '',
         r.imageId ?? '',
+        r.cameraImageId ?? '',
+        typeof r.nearbyCamera === 'string'
+          ? r.nearbyCamera
+          : r.nearbyCamera
+            ? JSON.stringify(r.nearbyCamera)
+            : '',
       ]
         .map(csvEscape)
         .join(',')
@@ -78,6 +86,8 @@ export function rowsToGeoJson(rows) {
             confirmCount: Number(r.confirmCount) || 1,
             lastConfirmedAt: r.lastConfirmedAt ?? r.createdAt ?? null,
             imageId: r.imageId ?? null,
+            cameraImageId: r.cameraImageId ?? null,
+            nearbyCamera: r.nearbyCamera ?? null,
           },
         };
       })

@@ -22,6 +22,9 @@
       <div class="stage" aria-label="Live camera detection">
         <video id="video" playsinline muted autoplay></video>
         <canvas id="overlay"></canvas>
+        <div id="recordLoggedFlash" class="record-logged-flash" hidden aria-hidden="true">
+          LOGGED
+        </div>
       </div>
 
       <div class="controls">
@@ -34,6 +37,13 @@
         <label class="alert-toggle" title="Heads-up proximity alerts for logged potholes ahead">
           <input type="checkbox" id="alertsToggle" checked />
           Alerts
+        </label>
+        <label
+          class="alert-toggle record-toggle"
+          title="Slower inference + quieter overlay + big LOGGED flash for screen recording"
+        >
+          <input type="checkbox" id="recordModeToggle" />
+          Record Mode
         </label>
         <button id="debugToggle" class="secondary compact" type="button" title="Raw low-confidence candidates only — does not change logging">Debug</button>
       </div>

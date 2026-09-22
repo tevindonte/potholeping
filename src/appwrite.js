@@ -3,6 +3,7 @@
  */
 
 import { Client, Account, Storage, TablesDB, ID, Query } from 'appwrite';
+import { resolveNearbyCameraAttachment } from './nycCameras.js';
 
 const client = new Client()
   .setEndpoint(import.meta.env.VITE_APPWRITE_ENDPOINT)
@@ -27,6 +28,8 @@ let supportsPhysicallyVerified = true;
 let supportsModelVersion = true;
 let supportsConfirmCount = true;
 let supportsLastConfirmedAt = true;
+let supportsNearbyCamera = true;
+let supportsCameraImageId = true;
 
 export async function ensureSession() {
   if (ready) return;
@@ -69,6 +72,8 @@ function buildRowData({
   modelVersion,
   confirmCount,
   lastConfirmedAt,
+  nearbyCamera,
+  cameraImageId,
 }) {
   const nowIso = createdAt || new Date().toISOString();
   const data = {
@@ -91,6 +96,15 @@ function buildRowData({
   }
   if (supportsLastConfirmedAt) {
     data.lastConfirmedAt = lastConfirmedAt || nowIso;
+  }
+  if (supportsNearbyCamera && nearbyCamera != null) {
+    data.nearbyCamera =
+      typeof nearbyCamera === 'string'
+        ? nearbyCamera
+        : JSON.stringify(nearbyCamera);
+  }
+  if (supportsCameraImageId && cameraImageId) {
+    data.cameraImageId = String(cameraImageId);
   }
   return data;
 }
@@ -123,6 +137,20 @@ function markUnsupportedFromError(msg) {
     /lastConfirmedAt|Unknown attribute|Invalid document/i.test(msg)
   ) {
     supportsLastConfirmedAt = false;
+    changed = true;
+  }
+  if (
+    supportsNearbyCamera &&
+    /nearbyCamera|Unknown attribute|Invalid document/i.test(msg)
+  ) {
+    supportsNearbyCamera = false;
+    changed = true;
+  }
+  if (
+    supportsCameraImageId &&
+    /cameraImageId|Unknown attribute|Invalid document/i.test(msg)
+  ) {
+    supportsCameraImageId = false;
     changed = true;
   }
   return changed;
@@ -166,6 +194,8 @@ async function updateRowWithFallback(rowId, data) {
     if (!supportsModelVersion) delete cleaned.modelVersion;
     if (!supportsConfirmCount) delete cleaned.confirmCount;
     if (!supportsLastConfirmedAt) delete cleaned.lastConfirmedAt;
+    if (!supportsNearbyCamera) delete cleaned.nearbyCamera;
+    if (!supportsCameraImageId) delete cleaned.cameraImageId;
     return attempt(cleaned);
   }
 }
@@ -240,8 +270,8 @@ function isClearlyBetter(incoming, existing) {
   return false;
 }
 
-async function uploadImage(blob) {
-  const file = new File([blob], `pothole-${Date.now()}.jpg`, {
+async function uploadImage(blob, filenamePrefix = 'pothole') {
+  const file = new File([blob], `${filenamePrefix}-${Date.now()}.jpg`, {
     type: 'image/jpeg',
   });
   return storage.createFile({
@@ -252,8 +282,42 @@ async function uploadImage(blob) {
 }
 
 /**
+ * Silent secondary attach: nearest NYC DOT cam ≤200m → Storage + metadata.
+ * Never replaces primary imageId. Failures are ignored.
+ */
+async function attachNearbyCameraToRow(rowId, latitude, longitude) {
+  if (!supportsNearbyCamera && !supportsCameraImageId) return null;
+  try {
+    const hit = await resolveNearbyCameraAttachment(latitude, longitude);
+    if (!hit) return null;
+
+    const fileUpload = await uploadImage(hit.blob, 'nyc-cam');
+    const frameView = getImageUrl(fileUpload.$id);
+    const nearbyCamera = {
+      camera_id: hit.camera_id,
+      name: hit.name,
+      distance_meters: hit.distance_meters,
+      frame_url: typeof frameView === 'string' ? frameView : String(frameView),
+      fetched_at: hit.fetched_at,
+    };
+
+    const patch = {};
+    if (supportsNearbyCamera) patch.nearbyCamera = JSON.stringify(nearbyCamera);
+    if (supportsCameraImageId) patch.cameraImageId = fileUpload.$id;
+
+    if (Object.keys(patch).length === 0) return nearbyCamera;
+
+    await updateRowWithFallback(rowId, patch);
+    return nearbyCamera;
+  } catch (err) {
+    console.warn('Nearby NYC camera attach skipped', err);
+    return null;
+  }
+}
+
+/**
  * Create a new pin or re-confirm a nearby existing one.
- * @returns {{ row, imageId, action: 'created'|'confirmed' }}
+ * @returns {{ row, imageId, action: 'created'|'confirmed', nearbyCamera?: object|null }}
  */
 export async function logDetection({
   blob,
@@ -325,7 +389,20 @@ export async function logDetection({
     confirmCount: 1,
     lastConfirmedAt: nowIso,
   });
-  return { row, imageId: fileUpload.$id, action: 'created' };
+
+  // Background-ish: attach cam after primary create; do not fail the log
+  const nearbyCamera = await attachNearbyCameraToRow(
+    row.$id,
+    latitude,
+    longitude
+  );
+
+  return {
+    row,
+    imageId: fileUpload.$id,
+    action: 'created',
+    nearbyCamera,
+  };
 }
 
 export async function updateSeverity(rowId, severity) {

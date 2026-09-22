@@ -99,6 +99,20 @@ function popupHtml(row) {
   const conf = Number(row.confidence);
   const verified = isVerified(row);
   const imageUrl = row.imageId ? getImageUrl(row.imageId) : null;
+  const cameraImageUrl = row.cameraImageId
+    ? getImageUrl(row.cameraImageId)
+    : null;
+  let nearbyMeta = null;
+  if (row.nearbyCamera) {
+    try {
+      nearbyMeta =
+        typeof row.nearbyCamera === 'string'
+          ? JSON.parse(row.nearbyCamera)
+          : row.nearbyCamera;
+    } catch {
+      nearbyMeta = null;
+    }
+  }
   const options = [1, 2, 3, 4, 5]
     .map(
       (n) =>
@@ -126,6 +140,17 @@ function popupHtml(row) {
     </label>
     <p class="pp-override-msg" hidden></p>
     ${imageUrl ? `<img src="${imageUrl}" alt="Pothole" loading="lazy" />` : ''}
+    ${
+      cameraImageUrl
+        ? `<p class="pp-cam-label">Nearby DOT cam${
+            nearbyMeta?.name ? ` · ${nearbyMeta.name}` : ''
+          }${
+            nearbyMeta?.distance_meters != null
+              ? ` · ${Math.round(nearbyMeta.distance_meters)}m`
+              : ''
+          }</p><img src="${cameraImageUrl}" alt="Nearby traffic camera" loading="lazy" />`
+        : ''
+    }
   </div>`;
 }
 

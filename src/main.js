@@ -4,6 +4,7 @@
 
 import './style.css';
 import { loadModel, inferFrame, CONF_THRESHOLD, getInputSize, getActiveModelVersion } from './inference.js';
+import { prefetchNycCameras } from './nycCameras.js';
 import { listModels, DEFAULT_MODEL_VERSION } from './models.js';
 import { computeSeverity, severityColor } from './severity.js';
 import {
@@ -39,6 +40,8 @@ import { updateSoftTracks, resetSoftTracks } from './softTrack.js';
 
 const INFER_INTERVAL_MS = 250;
 const INFER_INTERVAL_FAST_MS = 150;
+/** Record Mode: slower ticks so screen capture has CPU/GPU headroom. */
+const INFER_INTERVAL_RECORD_MS = 700;
 const CONFIRM_N = 3;
 const COOLDOWN_MS = 9000;
 const JPEG_QUALITY = 0.72;
@@ -58,6 +61,10 @@ function isDebugMode() {
 
 let debugMode = isDebugMode();
 let debugTick = 0;
+/** Screen-recording accommodation: slower infer + quieter overlay + loud LOGGED flash. */
+let recordMode = false;
+let overlayHadBoxes = false;
+let recordFlashTimer = null;
 let inferIntervalMs = INFER_INTERVAL_MS;
 
 const video = document.getElementById('video');
@@ -253,6 +260,64 @@ function drawDetections(detections, rawDebug = null) {
     ctx.fillStyle = '#0b1220';
     ctx.fillText(label, det.x1 + pad, Math.max(th - 2, det.y1 - pad - 2));
   }
+}
+
+/** Record Mode: skip empty-frame canvas clears; only paint when boxes exist. */
+function updateOverlay(detections, rawDebug = null) {
+  const hasBoxes =
+    (detections && detections.length > 0) ||
+    (debugMode && rawDebug && rawDebug.length > 0);
+
+  if (recordMode) {
+    if (hasBoxes) {
+      drawDetections(detections, rawDebug);
+      overlayHadBoxes = true;
+    } else if (overlayHadBoxes) {
+      syncCanvasSize();
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+      overlayHadBoxes = false;
+    }
+    return;
+  }
+
+  drawDetections(detections, rawDebug);
+  overlayHadBoxes = hasBoxes;
+}
+
+function flashRecordLogged() {
+  if (!recordMode) return;
+  const el = document.getElementById('recordLoggedFlash');
+  if (!el) return;
+  el.hidden = false;
+  el.setAttribute('aria-hidden', 'false');
+  // Restart animation cleanly if another log lands during the flash
+  el.classList.remove('is-on');
+  void el.offsetWidth;
+  el.classList.add('is-on');
+  if (recordFlashTimer) clearTimeout(recordFlashTimer);
+  recordFlashTimer = setTimeout(() => {
+    el.classList.remove('is-on');
+    el.hidden = true;
+    el.setAttribute('aria-hidden', 'true');
+    recordFlashTimer = null;
+  }, 1000);
+}
+
+function hideRecordLoggedFlash() {
+  if (recordFlashTimer) {
+    clearTimeout(recordFlashTimer);
+    recordFlashTimer = null;
+  }
+  const el = document.getElementById('recordLoggedFlash');
+  if (!el) return;
+  el.classList.remove('is-on');
+  el.hidden = true;
+  el.setAttribute('aria-hidden', 'true');
+}
+
+function targetInferInterval(hasMidConf = false) {
+  if (recordMode) return INFER_INTERVAL_RECORD_MS;
+  return hasMidConf ? INFER_INTERVAL_FAST_MS : INFER_INTERVAL_MS;
 }
 
 function updateDebugHud(rawDebug, detections) {
@@ -517,6 +582,7 @@ async function confirmAndLog(bestDet, opts = {}) {
     sessionLogs.push({ ...entry, blob: undefined });
     logCountEl.textContent = String(loggedCount);
     pingLogged();
+    flashRecordLogged();
     suppressAlertAt(coords.latitude, coords.longitude);
 
     const tag = physicallyVerified ? 'verified' : 'visual';
@@ -573,7 +639,7 @@ async function inferenceTick() {
       includeRawDebug: debugMode,
       debugThresh: DEBUG_CONF,
     });
-    drawDetections(detections, rawDebug);
+    updateOverlay(detections, rawDebug);
     if (debugMode) {
       updateDebugHud(rawDebug, detections);
       logDebugCandidates(rawDebug);
@@ -582,8 +648,8 @@ async function inferenceTick() {
     const inCooldown = Date.now() - lastLoggedAt < COOLDOWN_MS;
     const soft = updateSoftTracks(softCandidates || []);
 
-    // Speed up only while a mid-conf approach is in flight
-    ensureInferTimer(soft.hasMidConf ? INFER_INTERVAL_FAST_MS : INFER_INTERVAL_MS);
+    // Record Mode stays slow; otherwise speed up while mid-conf approach is in flight
+    ensureInferTimer(targetInferInterval(soft.hasMidConf));
 
     if (!inCooldown && !logging) {
       if (detections.length > 0) {
@@ -651,12 +717,13 @@ async function startDetecting() {
     startProximityAlerts(() => lastCoords);
     const imgsz = getInputSize();
     const alertNote = getAlertsEnabled() ? '' : ' · alerts off';
+    const recordNote = recordMode ? ' · record mode' : '';
     setStatus(
-      `Scanning · ${getActiveModelVersion()} · imgsz ${imgsz}${motionOk ? ' · motion on' : ''}${alertNote} — tip: angle mount up to cut hood from frame`
+      `Scanning · ${getActiveModelVersion()} · imgsz ${imgsz}${motionOk ? ' · motion on' : ''}${alertNote}${recordNote} — tip: angle mount up to cut hood from frame`
     );
     if (modelSelect) modelSelect.disabled = true;
     inferIntervalMs = 0; // force timer recreate
-    ensureInferTimer(INFER_INTERVAL_MS);
+    ensureInferTimer(targetInferInterval(false));
   } catch (err) {
     console.error(err);
     setStatus(`Camera error: ${err.message || err}`, 'err');
@@ -681,6 +748,8 @@ function stopDetecting({ showSummary = true } = {}) {
   releaseWakeLock();
   resetSoftTracks();
   ctx.clearRect(0, 0, overlay.width, overlay.height);
+  overlayHadBoxes = false;
+  hideRecordLoggedFlash();
   startBtn.disabled = false;
   stopBtn.disabled = true;
   if (modelSelect) modelSelect.disabled = false;
@@ -724,6 +793,7 @@ async function boot() {
 
   try {
     await ensureSession();
+    prefetchNycCameras();
     const imgsz = getInputSize();
     setStatus(
       `Ready · ${getActiveModelVersion()} · imgsz ${imgsz} — tip: raise/angle mount to minimize hood. Use ?imgsz=960 to trial higher res.`
@@ -765,6 +835,27 @@ alertsToggle?.addEventListener('change', () => {
       setStatus('Proximity alerts off', 'warn');
     }
   }
+});
+
+const recordModeToggle = document.getElementById('recordModeToggle');
+function applyRecordMode(enabled) {
+  recordMode = Boolean(enabled);
+  if (recordModeToggle) recordModeToggle.checked = recordMode;
+  document.body.classList.toggle('record-mode-on', recordMode);
+  if (!recordMode) hideRecordLoggedFlash();
+  if (running) {
+    inferIntervalMs = 0;
+    ensureInferTimer(targetInferInterval(false));
+    setStatus(
+      recordMode
+        ? 'Record Mode on — slower scans, big LOGGED flash'
+        : 'Record Mode off — normal cadence',
+      recordMode ? 'ok' : 'warn'
+    );
+  }
+}
+recordModeToggle?.addEventListener('change', () => {
+  applyRecordMode(recordModeToggle.checked);
 });
 
 const debugToggleBtn = document.getElementById('debugToggle');
